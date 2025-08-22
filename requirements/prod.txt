@@ -1,0 +1,12 @@
+# Include all base dependencies
+-r base.txt
+
+# Production Server
+gunicorn==23.0.0
+
+# Performance Optimizations
+orjson==3.10.12     # Faster JSON serialization
+uvloop==0.21.0      # Faster event loop (Linux only)
+
+# Production Monitoring
+psutil==6.1.0       # System monitoring

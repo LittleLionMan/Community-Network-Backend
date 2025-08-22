@@ -1,0 +1,37 @@
+# Core Framework
+fastapi>=0.116.0,<0.117.0
+uvicorn[standard]>=0.35.0
+python-multipart>=0.0.20
+
+# Database
+sqlalchemy[asyncio]>=2.0.40,<2.1.0
+asyncpg>=0.30.0
+alembic>=1.16.0
+redis>=6.0.0,<7.0.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.5.0
+passlib[bcrypt]>=1.7.4
+
+# Data Validation
+pydantic[email]>=2.11.0,<3.0.0
+pydantic-settings>=2.5.0
+
+# Scheduled Tasks (für später, falls nötig)
+APScheduler>=3.11.0
+
+# HTTP Client
+httpx>=0.28.0
+
+# Utilities
+python-slugify>=8.0.0
+Pillow>=11.3.0
+python-magic>=0.4.27
+
+# Rate Limiting
+slowapi>=0.1.9
+
+# Monitoring & Observability
+structlog>=25.4.0
+sentry-sdk[fastapi]>=2.35.0
+prometheus-client>=0.22.0

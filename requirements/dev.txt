@@ -1,0 +1,24 @@
+# Include all production dependencies
+-r base.txt
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx==0.28.1  # For TestClient
+faker==33.1.0  # For test data generation
+
+# Code Quality
+black==24.10.0
+isort==5.13.2
+flake8==7.1.1
+mypy==1.13.0
+
+# Development Tools
+pre-commit==4.0.1
+watchfiles==1.0.3  # For auto-reload
+ipython==8.31.0    # Better REPL
+rich==13.9.4       # Pretty printing for debugging
+
+# Database Tools
+psycopg2-binary==2.9.10  # For direct DB access during development
