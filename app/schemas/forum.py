@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from datetime import datetime
 from .user import UserSummary
@@ -19,8 +19,7 @@ class ForumThreadRead(BaseModel):
     created_at: datetime
     creator: UserSummary
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class ForumPostCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
@@ -37,5 +36,4 @@ class ForumPostRead(BaseModel):
     author: UserSummary
     thread_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)

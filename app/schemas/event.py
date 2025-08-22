@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 from .user import UserSummary
@@ -13,8 +13,7 @@ class EventCategoryRead(BaseModel):
     name: str
     description: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class EventCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
@@ -25,13 +24,15 @@ class EventCreate(BaseModel):
     max_participants: Optional[int] = Field(None, gt=0)
     category_id: int
 
-    @validator('start_datetime')
+    @field_validator('start_datetime')
+    @classmethod
     def validate_start_datetime(cls, v):
         if v <= datetime.now():
             raise ValueError('Start datetime must be in the future')
         return v
 
-    @validator('end_datetime')
+    @field_validator('end_datetime')
+    @classmethod
     def validate_end_datetime(cls, v, values):
         if v and 'start_datetime' in values and v <= values['start_datetime']:
             raise ValueError('End datetime must be after start datetime')
@@ -55,8 +56,7 @@ class EventSummary(BaseModel):
     creator: UserSummary
     category: EventCategoryRead
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class EventRead(BaseModel):
     id: int
@@ -71,8 +71,7 @@ class EventRead(BaseModel):
     creator_id: int
     category_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class EventParticipationCreate(BaseModel):
     event_id: int
@@ -88,5 +87,4 @@ class EventParticipationRead(BaseModel):
     user: UserSummary
     event_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)

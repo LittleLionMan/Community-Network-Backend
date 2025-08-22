@@ -45,5 +45,6 @@ class User(Base):
 
     #Auth
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
-    email_verified = Column(Boolean, default=False, nullable=False)
-    email_verified_at = Column(DateTime, nullable=True)
+    # HINZUFÜGEN:
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

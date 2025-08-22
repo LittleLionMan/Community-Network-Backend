@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 from typing import Optional
 from datetime import datetime
 import re
@@ -12,7 +12,8 @@ class UserCreate(BaseModel):
     bio: Optional[str] = Field(None, max_length=1000)
     location: Optional[str] = Field(None, max_length=200)
 
-    @validator('password')
+    @field_validator('password')
+    @classmethod
     def validate_password(cls, v):
         if not re.search(r'\d', v):
             raise ValueError('Password must contain at least one digit')
@@ -49,8 +50,7 @@ class UserPublic(BaseModel):
     location: Optional[str] = None
     created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class UserPrivate(BaseModel):
     id: int
@@ -71,5 +71,4 @@ class UserPrivate(BaseModel):
     bio_private: bool
     location_private: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)

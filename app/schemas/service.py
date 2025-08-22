@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from datetime import datetime
 from .user import UserSummary
@@ -21,8 +21,7 @@ class ServiceSummary(BaseModel):
     user: UserSummary
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class ServiceRead(BaseModel):
     id: int
@@ -33,5 +32,4 @@ class ServiceRead(BaseModel):
     created_at: datetime
     user_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)

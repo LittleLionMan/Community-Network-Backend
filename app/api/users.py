@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from ...database import get_db
-from ...models.user import User
-from ...schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate
-from ...services.privacy import PrivacyService
-from ...core.auth import get_current_user, get_current_user_optional
+from app.database import get_db
+from app.models.user import User
+from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate
+from app.services.privacy import PrivacyService
+from app.core.dependencies import get_current_user, get_optional_current_user
 
 router = APIRouter()
 
-@router.post("/users/", response_model=UserPrivate, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=UserPrivate, status_code=status.HTTP_201_CREATED)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
     if db.query(User).filter(User.display_name == user.display_name).first():
@@ -31,11 +31,11 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
     return UserPrivate.from_orm(db_user)
 
-@router.get("/users/{user_id}", response_model=UserPublic | UserPrivate)
+@router.get("/{user_id}", response_model=UserPublic | UserPrivate)
 def get_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)
+    current_user: Optional[User] = Depends(get_optional_current_user)
 ):
 
     viewer_id = current_user.id if current_user else None
@@ -54,7 +54,7 @@ def get_user(
 
     return user_data
 
-@router.put("/users/me", response_model=UserPrivate)
+@router.put("/me", response_model=UserPrivate)
 def update_current_user(
     user_update: UserUpdate,
     current_user: User = Depends(get_current_user),
@@ -77,12 +77,12 @@ def update_current_user(
 
     return UserPrivate.from_orm(current_user)
 
-@router.get("/users/", response_model=List[UserPublic])
+@router.get("/", response_model=List[UserPublic])
 def list_users(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)
+    current_user: Optional[User] = Depends(get_optional_current_user)
 ):
 
     users = db.query(User).offset(skip).limit(limit).all()

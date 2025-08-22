@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 from .user import UserSummary
@@ -14,15 +14,14 @@ class PollOptionRead(BaseModel):
     order_index: int
     vote_count: int = 0  # Computed field
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class PollCreate(BaseModel):
     question: str = Field(..., min_length=1, max_length=500)
     poll_type: PollType
     ends_at: Optional[datetime] = None
     thread_id: Optional[int] = None
-    options: List[PollOptionCreate] = Field(..., min_items=2, max_items=10)
+    options: List[PollOptionCreate] = Field(..., min_length=2, max_length=10)
 
 class PollUpdate(BaseModel):
     question: Optional[str] = Field(None, min_length=1, max_length=500)
@@ -41,8 +40,7 @@ class PollRead(BaseModel):
     options: List[PollOptionRead] = []
     total_votes: int = 0  # Computed field
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 class VoteCreate(BaseModel):
     poll_id: int
@@ -58,5 +56,4 @@ class VoteRead(BaseModel):
     poll_id: int
     option_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)

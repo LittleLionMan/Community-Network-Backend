@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 from .user import UserSummary
@@ -22,8 +22,7 @@ class CommentRead(BaseModel):
     service_id: Optional[int] = None
     replies: List['CommentRead'] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes = True)
 
 # Fix forward reference
 CommentRead.model_rebuild()

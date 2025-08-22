@@ -1,5 +1,5 @@
 # api/endpoints/auth.py
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -8,25 +8,18 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from typing import Any
 
-from ...core.database import get_db
-from ...core.dependencies import get_current_user, get_current_active_user
-from ...services.auth_service import AuthService
-from ...schemas.auth import (
+from app.database import get_db
+from app.core.dependencies import get_current_user, get_current_active_user
+from app.services.auth import AuthService
+from app.schemas.auth import (
     UserRegister, UserLogin, TokenResponse, TokenRefresh,
     EmailVerification, PasswordReset, PasswordResetConfirm, EmailUpdate
 )
-from ...schemas.user import UserPrivate
-from ...schemas.common import ErrorResponse
+from app.schemas.user import UserPrivate
+from app.schemas.common import ErrorResponse
 
 limiter = Limiter(key_func=get_remote_address)
-router = APIRouter(prefix="/auth", tags=["authentication"])
-
-@router.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request, exc):
-    return HTTPException(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        detail="Rate limit exceeded"
-    )
+router = APIRouter(tags=["authentication"])
 
 @router.post(
     "/register",
@@ -40,7 +33,7 @@ async def rate_limit_handler(request, exc):
 )
 @limiter.limit("5/minute")  # 5 registrations per minute per IP
 async def register(
-    request,
+    request: Request,
     user_data: UserRegister,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -68,7 +61,7 @@ async def register(
 )
 @limiter.limit("10/minute")  # 10 login attempts per minute per IP
 async def login(
-    request,
+    request: Request,
     login_data: UserLogin,
     db: Session = Depends(get_db)
 ):
@@ -95,7 +88,7 @@ async def login(
 )
 @limiter.limit("20/minute")  # 20 refresh attempts per minute per IP
 async def refresh_token(
-    request,
+    request: Request,
     token_data: TokenRefresh,
     db: Session = Depends(get_db)
 ):
@@ -173,7 +166,7 @@ async def verify_email(
 )
 @limiter.limit("3/hour")  # 3 resend attempts per hour per IP
 async def resend_verification(
-    request,
+    request: Request,
     current_user = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -197,7 +190,7 @@ async def resend_verification(
 )
 @limiter.limit("3/hour")  # 3 password reset requests per hour per IP
 async def forgot_password(
-    request,
+    request: Request,
     reset_data: PasswordReset,
     db: Session = Depends(get_db)
 ):
@@ -216,7 +209,7 @@ async def forgot_password(
 )
 @limiter.limit("5/minute")  # 5 reset attempts per minute per IP
 async def reset_password(
-    request,
+    request: Request,
     reset_data: PasswordResetConfirm,
     db: Session = Depends(get_db)
 ):

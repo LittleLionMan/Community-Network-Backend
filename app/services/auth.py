@@ -38,7 +38,7 @@ class AuthService:
         db_user = User(
             display_name=user_data.display_name,
             email=user_data.email,
-            hashed_password=hashed_password,
+            password_hash=hashed_password,
             first_name=user_data.first_name,
             last_name=user_data.last_name,
             email_verified=False,
@@ -57,7 +57,7 @@ class AuthService:
 
     def authenticate_user(self, email: str, password: str) -> Optional[User]:
         user = self.db.query(User).filter(User.email == email).first()
-        if not user or not verify_password(password, user.hashed_password):
+        if not user or not verify_password(password, user.password_hash):
             return None
         if not user.is_active:
             return None
@@ -105,7 +105,7 @@ class AuthService:
                 detail="User not found or inactive"
             )
 
-        db_refresh_token.is_revoked = True
+        setattr(db_refresh_token, 'is_revoked', True)
 
         new_tokens = self.create_tokens(user)
         self.db.commit()
@@ -122,7 +122,7 @@ class AuthService:
         ).first()
 
         if db_refresh_token:
-            db_refresh_token.is_revoked = True
+            setattr(db_refresh_token, 'is_revoked', True)
             self.db.commit()
             return True
         return False
@@ -155,7 +155,7 @@ class AuthService:
             user.email_verified = True
             user.email_verified_at = datetime.now(timezone.utc)
 
-            db_token.is_used = True
+            setattr(db_token, 'is_used', True)
 
             self.db.commit()
             return True
@@ -200,9 +200,9 @@ class AuthService:
 
         user = self.db.query(User).filter(User.id == db_token.user_id).first()
         if user:
-            user.hashed_password = get_password_hash(new_password)
+            user.password_hash = get_password_hash(new_password)
 
-            db_token.is_used = True
+            setattr(db_token, 'is_used', True)
 
             self.revoke_all_user_tokens(user.id)
 
@@ -212,7 +212,7 @@ class AuthService:
         return False
 
     def update_email(self, user: User, new_email: str, password: str) -> bool:
-        if not verify_password(password, user.hashed_password):
+        if not verify_password(password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Incorrect password"
