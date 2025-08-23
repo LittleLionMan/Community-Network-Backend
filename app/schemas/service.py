@@ -30,6 +30,6 @@ class ServiceRead(BaseModel):
     is_offering: bool
     is_active: bool
     created_at: datetime
-    user_id: int
+    user: UserSummary
 
     model_config = ConfigDict(from_attributes = True)

@@ -1,7 +1,6 @@
-# api/endpoints/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from fastapi.security import HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -31,17 +30,17 @@ router = APIRouter(tags=["authentication"])
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
     }
 )
-@limiter.limit("5/minute")  # 5 registrations per minute per IP
+@limiter.limit("5/minute")
 async def register(
     request: Request,
     user_data: UserRegister,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
 
     try:
-        user = auth_service.register_user(user_data)
+        user = await auth_service.register_user(user_data)
         return user
     except HTTPException:
         raise
@@ -59,16 +58,16 @@ async def register(
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
     }
 )
-@limiter.limit("10/minute")  # 10 login attempts per minute per IP
+@limiter.limit("10/minute")
 async def login(
     request: Request,
     login_data: UserLogin,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
 
     # Authenticate user
-    user = auth_service.authenticate_user(login_data.email, login_data.password)
+    user = await auth_service.authenticate_user(login_data.email, login_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -76,7 +75,7 @@ async def login(
         )
 
     # Create tokens
-    tokens = auth_service.create_tokens(user)
+    tokens = await auth_service.create_tokens(user)
     return tokens
 
 @router.post(
@@ -86,16 +85,16 @@ async def login(
         401: {"model": ErrorResponse, "description": "Invalid refresh token"}
     }
 )
-@limiter.limit("20/minute")  # 20 refresh attempts per minute per IP
+@limiter.limit("20/minute")
 async def refresh_token(
     request: Request,
     token_data: TokenRefresh,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
 
     try:
-        tokens = auth_service.refresh_access_token(token_data.refresh_token)
+        tokens = await auth_service.refresh_access_token(token_data.refresh_token)
         return tokens
     except HTTPException:
         raise
@@ -110,10 +109,10 @@ async def refresh_token(
 async def logout(
     refresh_token_data: TokenRefresh,
     current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
-    auth_service.revoke_refresh_token(current_user.id, refresh_token_data.refresh_token)
+    await auth_service.revoke_refresh_token(current_user.id, refresh_token_data.refresh_token)
 
 @router.post(
     "/logout-all",
@@ -124,10 +123,10 @@ async def logout(
 )
 async def logout_all(
     current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
-    auth_service.revoke_all_user_tokens(current_user.id)
+    await auth_service.revoke_all_user_tokens(current_user.id)
 
 @router.post(
     "/verify-email",
@@ -136,16 +135,16 @@ async def logout_all(
         400: {"model": ErrorResponse, "description": "Invalid or expired token"}
     }
 )
-@limiter.limit("10/minute")  # 10 verification attempts per minute per IP
+@limiter.limit("10/minute")
 async def verify_email(
-    request,
+    request: Request,
     verification_data: EmailVerification,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
 
     try:
-        success = auth_service.verify_email(verification_data.token)
+        success = await auth_service.verify_email(verification_data.token)
         if success:
             return {"message": "Email verified successfully"}
         else:
@@ -164,11 +163,11 @@ async def verify_email(
         409: {"model": ErrorResponse, "description": "Email already verified"}
     }
 )
-@limiter.limit("3/hour")  # 3 resend attempts per hour per IP
+@limiter.limit("3/hour")
 async def resend_verification(
     request: Request,
     current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     if current_user.email_verified:
         raise HTTPException(
@@ -177,7 +176,7 @@ async def resend_verification(
         )
 
     auth_service = AuthService(db)
-    auth_service._send_verification_email(current_user)
+    await auth_service._send_verification_email(current_user)
 
     return {"message": "Verification email sent"}
 
@@ -188,14 +187,14 @@ async def resend_verification(
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
     }
 )
-@limiter.limit("3/hour")  # 3 password reset requests per hour per IP
+@limiter.limit("3/hour")
 async def forgot_password(
     request: Request,
     reset_data: PasswordReset,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
-    auth_service.request_password_reset(reset_data.email)
+    await auth_service.request_password_reset(reset_data.email)
 
     # Always return success to prevent email enumeration
     return {"message": "If the email exists, a reset link has been sent"}
@@ -207,16 +206,16 @@ async def forgot_password(
         400: {"model": ErrorResponse, "description": "Invalid or expired token"}
     }
 )
-@limiter.limit("5/minute")  # 5 reset attempts per minute per IP
+@limiter.limit("5/minute")
 async def reset_password(
     request: Request,
     reset_data: PasswordResetConfirm,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
 
     try:
-        success = auth_service.reset_password(reset_data.token, reset_data.new_password)
+        success = await auth_service.reset_password(reset_data.token, reset_data.new_password)
         if success:
             return {"message": "Password reset successfully"}
         else:
@@ -238,13 +237,13 @@ async def reset_password(
 async def update_email(
     email_data: EmailUpdate,
     current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
 
     try:
-        auth_service.update_email(current_user, email_data.new_email, email_data.password)
-        db.refresh(current_user)
+        await auth_service.update_email(current_user, email_data.new_email, email_data.password)
+        await db.refresh(current_user)
         return current_user
     except HTTPException:
         raise
@@ -258,10 +257,10 @@ async def update_email(
 )
 async def delete_account(
     current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     auth_service = AuthService(db)
-    auth_service.delete_user_account(current_user)
+    await auth_service.delete_user_account(current_user)
 
 @router.get(
     "/me",

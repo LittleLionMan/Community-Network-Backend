@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from typing import List, Optional
+
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate
@@ -10,37 +12,46 @@ from app.core.dependencies import get_current_user, get_optional_current_user
 router = APIRouter()
 
 @router.post("/", response_model=UserPrivate, status_code=status.HTTP_201_CREATED)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-
-    if db.query(User).filter(User.display_name == user.display_name).first():
+async def create_user(
+    user: UserCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    # Check display name
+    result = await db.execute(select(User).where(User.display_name == user.display_name))
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Display name already registered"
         )
 
-    if db.query(User).filter(User.email == user.email).first():
+    # Check email
+    result = await db.execute(select(User).where(User.email == user.email))
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
 
-    db_user = User(**user.dict(exclude={"password"}), password_hash="hashed_password")
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+    # Create user
+    user_data = user.model_dump(exclude={"password"})
+    user_data["password_hash"] = "hashed_password"  # TODO: Implement proper hashing
 
-    return UserPrivate.from_orm(db_user)
+    db_user = User(**user_data)
+    db.add(db_user)
+    await db.commit()
+    await db.refresh(db_user)
+
+    return UserPrivate.model_validate(db_user)
 
 @router.get("/{user_id}", response_model=UserPublic | UserPrivate)
-def get_user(
+async def get_user(
     user_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user)
 ):
-
     viewer_id = current_user.id if current_user else None
 
-    user_data = PrivacyService.get_user_for_viewer(
+    user_data = await PrivacyService.get_user_for_viewer(
         db=db,
         user_id=user_id,
         viewer_id=viewer_id
@@ -55,44 +66,51 @@ def get_user(
     return user_data
 
 @router.put("/me", response_model=UserPrivate)
-def update_current_user(
+async def update_current_user(
     user_update: UserUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-
+    # Check display name if changed
     if user_update.display_name and user_update.display_name != current_user.display_name:
-        if db.query(User).filter(User.display_name == user_update.display_name).first():
+        result = await db.execute(
+            select(User).where(User.display_name == user_update.display_name)
+        )
+        if result.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Display name already taken"
             )
 
-    update_data = user_update.dict(exclude_unset=True)
+    # Update user
+    update_data = user_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(current_user, field, value)
 
-    db.commit()
-    db.refresh(current_user)
+    await db.commit()
+    await db.refresh(current_user)
 
-    return UserPrivate.from_orm(current_user)
+    return UserPrivate.model_validate(current_user)
 
 @router.get("/", response_model=List[UserPublic])
-def list_users(
+async def list_users(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user)
 ):
+    result = await db.execute(
+        select(User).offset(skip).limit(limit)
+    )
+    users = result.scalars().all()
 
-    users = db.query(User).offset(skip).limit(limit).all()
     viewer_id = current_user.id if current_user else None
 
     filtered_users = []
     for user in users:
         if viewer_id and viewer_id == user.id:
-            filtered_users.append(PrivacyService._filter_public_user_data(user))
+            filtered_users.append(await PrivacyService._filter_public_user_data(user))
         else:
-            filtered_users.append(PrivacyService._filter_public_user_data(user))
+            filtered_users.append(await PrivacyService._filter_public_user_data(user))
 
     return filtered_users

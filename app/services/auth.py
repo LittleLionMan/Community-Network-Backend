@@ -1,7 +1,8 @@
-# services/auth_service.py
+# app/services/auth.py
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, delete
 from fastapi import HTTPException, status
 from ..models.user import User
 from ..models.auth import RefreshToken, EmailVerificationToken, PasswordResetToken
@@ -13,13 +14,17 @@ from ..core.auth import (
 )
 
 class AuthService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def register_user(self, user_data: UserRegister) -> User:
-        existing_user = self.db.query(User).filter(
-            (User.email == user_data.email) | (User.display_name == user_data.display_name)
-        ).first()
+    async def register_user(self, user_data: UserRegister) -> User:
+        # Check existing user
+        result = await self.db.execute(
+            select(User).where(
+                (User.email == user_data.email) | (User.display_name == user_data.display_name)
+            )
+        )
+        existing_user = result.scalar_one_or_none()
 
         if existing_user:
             if existing_user.email == user_data.email:
@@ -47,23 +52,25 @@ class AuthService:
         )
 
         self.db.add(db_user)
-        self.db.commit()
-        self.db.refresh(db_user)
+        await self.db.commit()
+        await self.db.refresh(db_user)
 
         # Send verification email
-        self._send_verification_email(db_user)
+        await self._send_verification_email(db_user)
 
         return db_user
 
-    def authenticate_user(self, email: str, password: str) -> Optional[User]:
-        user = self.db.query(User).filter(User.email == email).first()
+    async def authenticate_user(self, email: str, password: str) -> Optional[User]:
+        result = await self.db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
         if not user or not verify_password(password, user.password_hash):
             return None
         if not user.is_active:
             return None
         return user
 
-    def create_tokens(self, user: User) -> TokenResponse:
+    async def create_tokens(self, user: User) -> TokenResponse:
         access_token = create_access_token(data={"sub": str(user.id)})
 
         refresh_token = create_refresh_token()
@@ -75,7 +82,7 @@ class AuthService:
             expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
         )
         self.db.add(db_refresh_token)
-        self.db.commit()
+        await self.db.commit()
 
         return TokenResponse(
             access_token=access_token,
@@ -83,14 +90,17 @@ class AuthService:
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
 
-    def refresh_access_token(self, refresh_token: str) -> TokenResponse:
+    async def refresh_access_token(self, refresh_token: str) -> TokenResponse:
         refresh_token_hash = hash_token(refresh_token)
 
-        db_refresh_token = self.db.query(RefreshToken).filter(
-            RefreshToken.token_hash == refresh_token_hash,
-            RefreshToken.is_revoked == False,
-            RefreshToken.expires_at > datetime.now(timezone.utc)
-        ).first()
+        result = await self.db.execute(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == refresh_token_hash,
+                RefreshToken.is_revoked == False,
+                RefreshToken.expires_at > datetime.now(timezone.utc)
+            )
+        )
+        db_refresh_token = result.scalar_one_or_none()
 
         if not db_refresh_token:
             raise HTTPException(
@@ -98,51 +108,69 @@ class AuthService:
                 detail="Invalid refresh token"
             )
 
-        user = self.db.query(User).filter(User.id == db_refresh_token.user_id).first()
+        result = await self.db.execute(select(User).where(User.id == db_refresh_token.user_id))
+        user = result.scalar_one_or_none()
+
         if not user or not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive"
             )
 
-        setattr(db_refresh_token, 'is_revoked', True)
+        # Revoke old token
+        await self.db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.id == db_refresh_token.id)
+            .values(is_revoked=True)
+        )
 
-        new_tokens = self.create_tokens(user)
-        self.db.commit()
+        new_tokens = await self.create_tokens(user)
+        await self.db.commit()
 
         return new_tokens
 
-    def revoke_refresh_token(self, user_id: int, refresh_token: str) -> bool:
+    async def revoke_refresh_token(self, user_id: int, refresh_token: str) -> bool:
         refresh_token_hash = hash_token(refresh_token)
 
-        db_refresh_token = self.db.query(RefreshToken).filter(
-            RefreshToken.token_hash == refresh_token_hash,
-            RefreshToken.user_id == user_id,
-            RefreshToken.is_revoked == False
-        ).first()
+        result = await self.db.execute(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == refresh_token_hash,
+                RefreshToken.user_id == user_id,
+                RefreshToken.is_revoked == False
+            )
+        )
+        db_refresh_token = result.scalar_one_or_none()
 
         if db_refresh_token:
-            setattr(db_refresh_token, 'is_revoked', True)
-            self.db.commit()
+            await self.db.execute(
+                update(RefreshToken)
+                .where(RefreshToken.id == db_refresh_token.id)
+                .values(is_revoked=True)
+            )
+            await self.db.commit()
             return True
         return False
 
-    def revoke_all_user_tokens(self, user_id: int) -> int:
-        count = self.db.query(RefreshToken).filter(
-            RefreshToken.user_id == user_id,
-            RefreshToken.is_revoked == False
-        ).update({"is_revoked": True})
-        self.db.commit()
-        return count
+    async def revoke_all_user_tokens(self, user_id: int) -> int:
+        result = await self.db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.is_revoked == False)
+            .values(is_revoked=True)
+        )
+        await self.db.commit()
+        return result.rowcount
 
-    def verify_email(self, token: str) -> bool:
+    async def verify_email(self, token: str) -> bool:
         token_hash = hash_token(token)
 
-        db_token = self.db.query(EmailVerificationToken).filter(
-            EmailVerificationToken.token_hash == token_hash,
-            EmailVerificationToken.is_used == False,
-            EmailVerificationToken.expires_at > datetime.now(timezone.utc)
-        ).first()
+        result = await self.db.execute(
+            select(EmailVerificationToken).where(
+                EmailVerificationToken.token_hash == token_hash,
+                EmailVerificationToken.is_used == False,
+                EmailVerificationToken.expires_at > datetime.now(timezone.utc)
+            )
+        )
+        db_token = result.scalar_one_or_none()
 
         if not db_token:
             raise HTTPException(
@@ -150,22 +178,30 @@ class AuthService:
                 detail="Invalid or expired verification token"
             )
 
-        user = self.db.query(User).filter(User.id == db_token.user_id).first()
+        result = await self.db.execute(select(User).where(User.id == db_token.user_id))
+        user = result.scalar_one_or_none()
+
         if user:
             user.email_verified = True
             user.email_verified_at = datetime.now(timezone.utc)
 
-            setattr(db_token, 'is_used', True)
+            await self.db.execute(
+                update(EmailVerificationToken)
+                .where(EmailVerificationToken.id == db_token.id)
+                .values(is_used=True)
+            )
 
-            self.db.commit()
+            await self.db.commit()
             return True
 
         return False
 
-    def request_password_reset(self, email: str) -> bool:
-        user = self.db.query(User).filter(User.email == email).first()
+    async def request_password_reset(self, email: str) -> bool:
+        result = await self.db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
         if not user:
-            return True
+            return True  # Don't reveal if email exists
 
         reset_token = create_refresh_token()
         token_hash = hash_token(reset_token)
@@ -173,24 +209,27 @@ class AuthService:
         db_token = PasswordResetToken(
             token_hash=token_hash,
             user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)  # 1 hour expiry
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
         )
         self.db.add(db_token)
-        self.db.commit()
+        await self.db.commit()
 
         email_body = generate_password_reset_email(email, reset_token)
         send_email(email, "Passwort zurücksetzen", email_body, is_html=True)
 
         return True
 
-    def reset_password(self, token: str, new_password: str) -> bool:
+    async def reset_password(self, token: str, new_password: str) -> bool:
         token_hash = hash_token(token)
 
-        db_token = self.db.query(PasswordResetToken).filter(
-            PasswordResetToken.token_hash == token_hash,
-            PasswordResetToken.is_used == False,
-            PasswordResetToken.expires_at > datetime.now(timezone.utc)
-        ).first()
+        result = await self.db.execute(
+            select(PasswordResetToken).where(
+                PasswordResetToken.token_hash == token_hash,
+                PasswordResetToken.is_used == False,
+                PasswordResetToken.expires_at > datetime.now(timezone.utc)
+            )
+        )
+        db_token = result.scalar_one_or_none()
 
         if not db_token:
             raise HTTPException(
@@ -198,30 +237,35 @@ class AuthService:
                 detail="Invalid or expired reset token"
             )
 
-        user = self.db.query(User).filter(User.id == db_token.user_id).first()
+        result = await self.db.execute(select(User).where(User.id == db_token.user_id))
+        user = result.scalar_one_or_none()
+
         if user:
             user.password_hash = get_password_hash(new_password)
 
-            setattr(db_token, 'is_used', True)
+            await self.db.execute(
+                update(PasswordResetToken)
+                .where(PasswordResetToken.id == db_token.id)
+                .values(is_used=True)
+            )
 
-            self.revoke_all_user_tokens(user.id)
-
-            self.db.commit()
+            await self.revoke_all_user_tokens(user.id)
+            await self.db.commit()
             return True
 
         return False
 
-    def update_email(self, user: User, new_email: str, password: str) -> bool:
+    async def update_email(self, user: User, new_email: str, password: str) -> bool:
         if not verify_password(password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Incorrect password"
             )
 
-        existing_user = self.db.query(User).filter(
-            User.email == new_email,
-            User.id != user.id
-        ).first()
+        result = await self.db.execute(
+            select(User).where(User.email == new_email, User.id != user.id)
+        )
+        existing_user = result.scalar_one_or_none()
 
         if existing_user:
             raise HTTPException(
@@ -232,33 +276,32 @@ class AuthService:
         user.email = new_email
         user.email_verified = False
         user.email_verified_at = None
-        self.db.commit()
+        await self.db.commit()
 
-        self._send_verification_email(user)
-
+        await self._send_verification_email(user)
         return True
 
-    def delete_user_account(self, user: User) -> bool:
-        self.revoke_all_user_tokens(user.id)
+    async def delete_user_account(self, user: User) -> bool:
+        await self.revoke_all_user_tokens(user.id)
 
         user.is_active = False
         user.email = f"deleted_{user.id}@deleted.local"
         user.display_name = f"deleted_user_{user.id}"
 
-        self.db.commit()
+        await self.db.commit()
         return True
 
-    def _send_verification_email(self, user: User):
+    async def _send_verification_email(self, user: User):
         verification_token = create_refresh_token()
         token_hash = hash_token(verification_token)
 
         db_token = EmailVerificationToken(
             token_hash=token_hash,
             user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24)  # 24 hours expiry
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24)
         )
         self.db.add(db_token)
-        self.db.commit()
+        await self.db.commit()
 
         email_body = generate_verification_email(user.email, verification_token)
         send_email(user.email, "E-Mail-Adresse bestätigen", email_body, is_html=True)

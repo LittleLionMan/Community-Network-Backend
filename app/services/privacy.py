@@ -1,28 +1,30 @@
 from typing import Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from ..models.user import User
 from ..schemas.user import UserPublic, UserPrivate
 
 class PrivacyService:
 
     @staticmethod
-    def get_user_for_viewer(
-        db: Session,
+    async def get_user_for_viewer(
+        db: AsyncSession,
         user_id: int,
         viewer_id: Optional[int] = None
     ) -> Optional[UserPublic | UserPrivate]:
-        user = db.query(User).filter(User.id == user_id).first()
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+
         if not user:
             return None
 
         if viewer_id and viewer_id == user_id:
-            return UserPrivate.from_orm(user)
+            return UserPrivate.model_validate(user)
 
-        return PrivacyService._filter_public_user_data(user)
+        return await PrivacyService._filter_public_user_data(user)
 
     @staticmethod
-    def _filter_public_user_data(user: User) -> UserPublic:
-
+    async def _filter_public_user_data(user: User) -> UserPublic:
         user_data = {
             "id": user.id,
             "display_name": user.display_name

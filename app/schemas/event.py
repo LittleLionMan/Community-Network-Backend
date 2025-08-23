@@ -55,6 +55,7 @@ class EventSummary(BaseModel):
     location: Optional[str] = None
     creator: UserSummary
     category: EventCategoryRead
+    participant_count: int = 0
 
     model_config = ConfigDict(from_attributes = True)
 
@@ -70,6 +71,8 @@ class EventRead(BaseModel):
     created_at: datetime
     creator_id: int
     category_id: int
+    participant_count: int = 0
+    is_full: bool = False
 
     model_config = ConfigDict(from_attributes = True)
 

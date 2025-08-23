@@ -12,7 +12,7 @@ class PollOptionRead(BaseModel):
     id: int
     text: str
     order_index: int
-    vote_count: int = 0  # Computed field
+    vote_count: int = 0
 
     model_config = ConfigDict(from_attributes = True)
 
@@ -28,6 +28,12 @@ class PollUpdate(BaseModel):
     is_active: Optional[bool] = None
     ends_at: Optional[datetime] = None
 
+class ForumThreadSummary(BaseModel):
+    id: int
+    title: str
+
+    model_config = ConfigDict(from_attributes=True)
+
 class PollRead(BaseModel):
     id: int
     question: str
@@ -36,14 +42,13 @@ class PollRead(BaseModel):
     ends_at: Optional[datetime] = None
     created_at: datetime
     creator: UserSummary
-    thread_id: Optional[int] = None
+    thread: Optional[ForumThreadSummary] = None
     options: List[PollOptionRead] = []
     total_votes: int = 0  # Computed field
 
     model_config = ConfigDict(from_attributes = True)
 
 class VoteCreate(BaseModel):
-    poll_id: int
     option_id: int
 
 class VoteUpdate(BaseModel):
