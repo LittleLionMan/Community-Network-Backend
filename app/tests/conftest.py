@@ -6,10 +6,12 @@ from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+# ✅ Environment setup
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only")
 os.environ.setdefault("DEBUG", "true")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "1000")  # ✅ Disable rate limiting for tests
 
 import sys
 from pathlib import Path
@@ -17,45 +19,53 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from app.main import app
-from app.database import get_db, Base
-from app import models
+from app.database import get_db  # ✅ No more Base import here
+from app.models.base import Base  # ✅ Import Base directly from models
+# ✅ Import ALL models to ensure tables are created
+from app import models  # This imports all models from __init__.py
+from app.models import *  # Import everything explicitly
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture  # ✅ Default function scope
 async def async_engine():
+    """Create test database engine"""
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
         connect_args={"check_same_thread": False}
     )
+
+    # ✅ Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
     yield engine
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
+    # ✅ Cleanup
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
+    except:
+        pass  # Ignore cleanup errors
 
 @pytest_asyncio.fixture
 async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
+    """Create isolated test session"""
     async_session_maker = async_sessionmaker(
         bind=async_engine,
         class_=AsyncSession,
         expire_on_commit=False
     )
-    async with async_engine.connect() as conn:
-        trans = await conn.begin()
-        async with async_session_maker(bind=conn) as session:
-            try:
-                yield session
-            finally:
-                await session.rollback()
-                await session.close()
-        await trans.rollback()
+
+    async with async_session_maker() as session:
+        yield session
+        await session.rollback()  # ✅ Always rollback test changes
 
 @pytest_asyncio.fixture
 async def async_client(async_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Create test client with database override"""
     async def override_get_db():
         yield async_session
 
@@ -69,15 +79,7 @@ async def async_client(async_session: AsyncSession) -> AsyncGenerator[AsyncClien
 
     app.dependency_overrides.clear()
 
-async def get_auth_headers(async_client: AsyncClient, user_data):
-    await async_client.post("/api/auth/register", json=user_data)
-    login_response = await async_client.post("/api/auth/login", json={
-        "email": user_data["email"],
-        "password": user_data["password"]
-    })
-    tokens = login_response.json()
-    return {"Authorization": f"Bearer {tokens['access_token']}"}
-
+# ✅ Simplified test data fixtures
 def _get_unique_user_data(base_name: str = "testuser"):
     unique_id = str(uuid.uuid4())[:8]
     return {

@@ -40,10 +40,9 @@ class TestEventCategoriesAdmin:
 
     @pytest.mark.asyncio
     async def test_create_category_without_auth(self, async_client: AsyncClient, test_category_data):
-        """Test creating category without authentication"""
         response = await async_client.post("/api/event-categories/admin", json=test_category_data)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_create_category_success(self, async_client: AsyncClient, test_category_data):

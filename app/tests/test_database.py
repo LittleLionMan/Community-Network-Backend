@@ -1,8 +1,25 @@
 import pytest
 from app.models.user import User
 from app.models.event import Event, EventCategory
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from app.models import Base
 from datetime import datetime
+
+@pytest.fixture(scope="function")
+def db_session():
+    engine = create_engine("sqlite:///:memory:", echo=True)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    Base.metadata.create_all(bind=engine)
+
+    session = SessionLocal()
+
+    yield session
+
+    session.rollback()
+    session.close()
+    Base.metadata.drop_all(bind=engine)
 
 class TestDatabaseModels:
 
@@ -19,10 +36,9 @@ class TestDatabaseModels:
 
         assert user.id is not None
         assert user.display_name == "testuser"
-        assert user.is_active is True  # Default value
+        assert user.is_active is True
 
     def test_user_event_relationship(self, db_session):
-        # Create user
         user = User(
             display_name="eventcreator",
             email="creator@example.com",
@@ -32,24 +48,21 @@ class TestDatabaseModels:
         db_session.commit()
         db_session.refresh(user)
 
-        # Create event category
         category = EventCategory(name="Test Category")
         db_session.add(category)
         db_session.commit()
         db_session.refresh(category)
 
-        # Create event
         event = Event(
             title="Test Event",
             description="Test Description",
-            start_datetime=datetime(2024, 12, 25, 18, 0,0),
+            start_datetime=datetime(2024, 12, 25, 18, 0, 0),
             creator_id=user.id,
             category_id=category.id
         )
         db_session.add(event)
         db_session.commit()
 
-        # Test relationship
         result = db_session.execute(
             select(User).where(User.id == user.id)
         )

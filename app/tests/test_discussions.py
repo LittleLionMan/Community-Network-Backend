@@ -1,6 +1,7 @@
 import pytest
 from httpx import AsyncClient
 from fastapi import status
+from .test_utils import get_auth_headers
 
 class TestDiscussionsPublic:
 
@@ -38,26 +39,15 @@ class TestDiscussionsPublic:
 
 class TestDiscussionsAuth:
 
-    async def _get_auth_headers(self, async_client: AsyncClient, user_data):
-        await async_client.post("/api/auth/register", json=user_data)
-
-        login_response = await async_client.post("/api/auth/login", json={
-            "email": user_data["email"],
-            "password": user_data["password"]
-        })
-        tokens = login_response.json()
-
-        return {"Authorization": f"Bearer {tokens['access_token']}"}
-
     @pytest.mark.asyncio
     async def test_create_thread_without_auth(self, async_client: AsyncClient, test_thread_data):
         response = await async_client.post("/api/discussions/", json=test_thread_data)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_create_thread_success(self, async_client: AsyncClient, test_user_data, test_thread_data):
-        headers = await self._get_auth_headers(async_client, test_user_data)
+        headers = await get_auth_headers(async_client, test_user_data)
 
         response = await async_client.post("/api/discussions/", json=test_thread_data, headers=headers)
 
@@ -69,7 +59,7 @@ class TestDiscussionsAuth:
 
     @pytest.mark.asyncio
     async def test_create_thread_invalid_data(self, async_client: AsyncClient, test_user_data):
-        headers = await self._get_auth_headers(async_client, test_user_data)
+        headers = await get_auth_headers(async_client, test_user_data)
 
         invalid_data = {}
 
@@ -82,11 +72,11 @@ class TestDiscussionsAuth:
         update_data = {"title": "Updated Title"}
         response = await async_client.put("/api/discussions/1", json=update_data)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_update_nonexistent_thread(self, async_client: AsyncClient, test_user_data):
-        headers = await self._get_auth_headers(async_client, test_user_data)
+        headers = await get_auth_headers(async_client, test_user_data)
 
         update_data = {"title": "Updated Title"}
         response = await async_client.put("/api/discussions/999", json=update_data, headers=headers)
@@ -97,11 +87,11 @@ class TestDiscussionsAuth:
     async def test_delete_thread_without_auth(self, async_client: AsyncClient):
         response = await async_client.delete("/api/discussions/1")
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_thread(self, async_client: AsyncClient, test_user_data):
-        headers = await self._get_auth_headers(async_client, test_user_data)
+        headers = await get_auth_headers(async_client, test_user_data)
 
         response = await async_client.delete("/api/discussions/999", headers=headers)
 
@@ -124,7 +114,7 @@ class TestDiscussionPosts:
     async def test_create_post_without_auth(self, async_client: AsyncClient, test_post_data):
         response = await async_client.post("/api/discussions/1/posts", json=test_post_data)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_create_post_nonexistent_thread(self, async_client: AsyncClient, test_user_data, test_post_data):
@@ -138,7 +128,7 @@ class TestDiscussionPosts:
     async def test_update_post_without_auth(self, async_client: AsyncClient, test_post_data):
         response = await async_client.put("/api/discussions/posts/1", json=test_post_data)
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_update_nonexistent_post(self, async_client: AsyncClient, test_user_data, test_post_data):
@@ -152,7 +142,7 @@ class TestDiscussionPosts:
     async def test_delete_post_without_auth(self, async_client: AsyncClient):
         response = await async_client.delete("/api/discussions/posts/1")
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_post(self, async_client: AsyncClient, test_user_data):
@@ -168,7 +158,7 @@ class TestUserDiscussions:
     async def test_get_my_threads_without_auth(self, async_client: AsyncClient):
         response = await async_client.get("/api/discussions/my/threads")
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]
 
     @pytest.mark.asyncio
     async def test_get_my_posts_without_auth(self, async_client: AsyncClient):

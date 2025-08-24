@@ -24,6 +24,9 @@ class User(Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     # Privacy settings
     email_private: Mapped[bool] = mapped_column(Boolean, default=True)
     first_name_private: Mapped[bool] = mapped_column(Boolean, default=False)

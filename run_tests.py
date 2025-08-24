@@ -1,100 +1,56 @@
 import subprocess
 import sys
 import os
-import time
 
 def run_tests():
+    """Run all tests with proper setup"""
 
     print("🧪 Starting Community Platform Tests...")
     print("=" * 60)
 
-    # ÄNDERUNG: Ensure we're in the right directory
     if not os.path.exists("app"):
         print("❌ Error: Please run this script from the project root directory")
         print("   (Should contain app/ folder)")
         return 1
 
-    test_files = [
-        "app/tests/test_health.py",
-        "app/tests/test_auth.py",
-        "app/tests/test_event_categories.py",
-        "app/tests/test_events.py",
-        "app/tests/test_services.py",
-        "app/tests/test_discussions.py",
-        "app/tests/test_comments.py",
-        "app/tests/test_polls.py"
+    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
+    os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only"
+    os.environ["DEBUG"] = "true"
+    os.environ["RATE_LIMIT_PER_MINUTE"] = "1000"
+
+    test_command = [
+        "python", "-m", "pytest",
+        "app/tests/",
+        "-v",
+        "--tb=short",
+        "--disable-warnings",
+        "-x"
     ]
 
-    results = {}
+    print(f"🚀 Running command: {' '.join(test_command)}")
+    print("-" * 60)
 
-    os.chdir("app")
+    try:
+        result = subprocess.run(test_command, timeout=300)
 
-    for test_file in test_files:
-        print(f"\n📋 Running {test_file}...")
-        try:
-            test_path = test_file.replace("app/", "")
-
-            result = subprocess.run(
-                ["python", "-m", "pytest", test_path, "-v", "--tb=short"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-
-            if result.returncode == 0:
-                print(f"✅ {test_file} - PASSED")
-                results[test_file] = "PASSED"
-            else:
-                print(f"❌ {test_file} - FAILED")
-                if result.stdout:
-                    print(f"📄 Output: {result.stdout}")
-                if result.stderr:
-                    print(f"🚨 Errors: {result.stderr}")
-                results[test_file] = "FAILED"
-
-        except subprocess.TimeoutExpired:
-            print(f"⏰ {test_file} - TIMEOUT")
-            results[test_file] = "TIMEOUT"
-        except Exception as e:
-            print(f"💥 {test_file} - ERROR: {e}")
-            results[test_file] = "ERROR"
-
-        time.sleep(2)
-    os.chdir("..")
-
-    print("\n" + "=" * 60)
-    print("📊 FINAL TEST SUMMARY:")
-    print("=" * 60)
-
-    passed = sum(1 for r in results.values() if r == "PASSED")
-    failed = sum(1 for r in results.values() if r == "FAILED")
-    errors = sum(1 for r in results.values() if r == "ERROR")
-    timeouts = sum(1 for r in results.values() if r == "TIMEOUT")
-
-    for test_file, result in results.items():
-        if result == "PASSED":
-            status_emoji = "✅"
-        elif result == "FAILED":
-            status_emoji = "❌"
-        elif result == "TIMEOUT":
-            status_emoji = "⏰"
+        if result.returncode == 0:
+            print("\n🎉 All tests passed!")
+            return 0
         else:
-            status_emoji = "💥"
+            print(f"\n❌ Tests failed with exit code {result.returncode}")
+            return result.returncode
 
-        print(f"{status_emoji} {test_file}: {result}")
-
-    print(f"\n📈 Results: {passed} passed, {failed} failed, {errors} errors, {timeouts} timeouts")
-
-    if failed == 0 and errors == 0 and timeouts == 0:
-        print("🎉 All tests passed! Community Platform is working correctly.")
-        return 0
-    else:
-        print("🚨 Some tests failed - check output above for details")
-        print("💡 Note: Rate limiting (429) errors are expected during rapid testing")
+    except subprocess.TimeoutExpired:
+        print("\n⏰ Tests timed out after 5 minutes")
+        return 1
+    except KeyboardInterrupt:
+        print("\n🛑 Tests interrupted by user")
+        return 1
+    except Exception as e:
+        print(f"\n💥 Error running tests: {e}")
         return 1
 
 def run_single_test(test_name):
-    """Run a single test file"""
     if not os.path.exists("app"):
         print("❌ Error: Please run this script from the project root directory")
         return 1
@@ -102,25 +58,52 @@ def run_single_test(test_name):
     test_path = f"app/tests/test_{test_name}.py"
     if not os.path.exists(test_path):
         print(f"❌ Test file {test_path} not found")
-        available_tests = [f.replace("test_", "").replace(".py", "")
-                          for f in os.listdir("app/tests")
-                          if f.startswith("test_") and f.endswith(".py")]
+        available_tests = []
+        if os.path.exists("app/tests"):
+            available_tests = [
+                f.replace("test_", "").replace(".py", "")
+                for f in os.listdir("app/tests")
+                if f.startswith("test_") and f.endswith(".py")
+            ]
         print(f"Available tests: {', '.join(available_tests)}")
         return 1
+
+    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
+    os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only"
+    os.environ["DEBUG"] = "true"
+    os.environ["RATE_LIMIT_PER_MINUTE"] = "1000"
 
     print(f"🧪 Running single test: {test_name}")
     print("=" * 40)
 
-    os.chdir("app")
-    result = subprocess.run(["python", "-m", "pytest", f"tests/test_{test_name}.py", "-v"])
-    os.chdir("..")
+    result = subprocess.run([
+        "python", "-m", "pytest",
+        test_path,
+        "-v",
+        "--tb=short",
+        "--disable-warnings"
+    ])
+
+    return result.returncode
+
+def run_auth_test():
+    print("🔐 Running all auth test...")
+
+    result = subprocess.run([
+        "python", "-m", "pytest",
+        "app/tests/test_auth.py",
+        "-v", "-s"
+    ])
 
     return result.returncode
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        test_name = sys.argv[1]
-        exit_code = run_single_test(test_name)
+        if sys.argv[1] == "auth":
+            exit_code = run_auth_test()
+        else:
+            test_name = sys.argv[1]
+            exit_code = run_single_test(test_name)
     else:
         exit_code = run_tests()
 
