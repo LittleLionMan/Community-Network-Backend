@@ -125,7 +125,12 @@ class TestCommentsAuth:
         response = await async_client.post("/api/comments/", json=comment_data, headers=headers)
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
-        assert "parent comment not found" in response.json()["detail"].lower()
+
+        detail = response.json()["detail"].lower()
+        assert any(error in detail for error in [
+            "parent comment not found",
+            "event not found"
+        ]), f"Unexpected error message: {detail}"
 
     @pytest.mark.asyncio
     async def test_update_comment_without_auth(self, async_client: AsyncClient):

@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import String, Text, Integer, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
-from .user import User
-from .event import Event
-from .service import Service
+if TYPE_CHECKING:
+    from .user import User
+    from .event import Event
+    from .service import Service
 
 class Comment(Base):
     __tablename__ = "comments"

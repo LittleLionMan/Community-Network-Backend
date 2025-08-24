@@ -5,31 +5,24 @@ import os
 import sys
 from pathlib import Path
 
-# Add project root to path
 ROOT_PATH = Path(__file__).parent.parent
 sys.path.append(str(ROOT_PATH))
 
-# Import your models and base
-from app.database import Base
-from app.models import *  # This imports all models
+from app.models.base import Base
+from app.models import *
 
-# this is the Alembic Config object
 config = context.config
 
-# Interpret the config file for Python logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set target metadata
 target_metadata = Base.metadata
 
 def get_url():
-    """Get database URL from environment"""
     from app.config import settings
-    return settings.DATABASE_URL.replace('+asyncpg', '+psycopg2')  # Alembic needs sync driver
+    return settings.DATABASE_URL.replace('+asyncpg', '+psycopg2')
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
     url = get_url()
     context.configure(
         url=url,

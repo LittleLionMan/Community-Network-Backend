@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Float, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from enum import Enum
-from .user import User
-from .service import Service
+if TYPE_CHECKING:
+    from .user import User
+    from .service import Service
 
 
 class ServiceInterest(Base):

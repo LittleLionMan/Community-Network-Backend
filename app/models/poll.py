@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import String, Boolean, Integer, DateTime, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from .enums import PollType
-from .user import User
-from .forum import ForumThread
+if TYPE_CHECKING:
+    from .user import User
+    from .forum import ForumThread
 
 class Poll(Base):
     __tablename__ = "polls"

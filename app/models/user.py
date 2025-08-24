@@ -1,14 +1,15 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import String, Text, Boolean, Integer, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
-from .event import Event, EventParticipation
-from .service import Service
-from .forum import ForumThread, ForumPost
-from .poll import Poll, Vote
-from .comment import Comment
+if TYPE_CHECKING:
+    from .event import Event, EventParticipation
+    from .service import Service
+    from .forum import ForumThread, ForumPost
+    from .poll import Poll, Vote
+    from .comment import Comment
 
 class User(Base):
     __tablename__ = "users"

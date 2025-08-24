@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from .enums import ParticipationStatus
-from .user import User
-from .comment import Comment
+if TYPE_CHECKING:
+    from .user import User
+    from .comment import Comment
 
 class EventCategory(Base):
     __tablename__ = "event_categories"
