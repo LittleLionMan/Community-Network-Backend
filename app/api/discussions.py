@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, update
 from sqlalchemy.orm import selectinload
@@ -12,7 +12,8 @@ from app.schemas.forum import (
     ForumPostCreate, ForumPostRead, ForumPostUpdate
 )
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
+from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user, get_moderation_service
+from app.services.moderation_service import ModerationService
 
 router = APIRouter()
 
@@ -78,15 +79,25 @@ async def get_thread(
     response_model=ForumThreadRead,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid thread data"},
+        400: {"model": ErrorResponse, "description": "Invalid thread data or title flagged"},
         401: {"model": ErrorResponse, "description": "Authentication required"}
     }
 )
 async def create_thread(
     thread_data: ForumThreadCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
+    moderation_service: ModerationService = Depends(get_moderation_service),
     db: AsyncSession = Depends(get_db)
 ):
+    moderation_result = moderation_service.check_content(thread_data.title)
+
+    if moderation_result['is_flagged']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Thread title flagged: {', '.join(moderation_result['reasons'])}"
+        )
+
     thread_dict = thread_data.model_dump()
     thread_dict["creator_id"] = current_user.id
 
@@ -94,6 +105,14 @@ async def create_thread(
     db.add(db_thread)
     await db.commit()
     await db.refresh(db_thread, ["creator"])
+
+    if moderation_result['requires_review']:
+        background_tasks.add_task(
+            _check_user_moderation_status,
+            db,
+            current_user.id,
+            moderation_service
+        )
 
     return ForumThreadRead.model_validate(db_thread)
 
@@ -222,7 +241,7 @@ async def get_thread_posts(
     response_model=ForumPostRead,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Thread is locked or invalid data"},
+        400: {"model": ErrorResponse, "description": "Thread is locked, invalid data, or content flagged"},
         401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Thread not found"}
     }
@@ -230,9 +249,19 @@ async def get_thread_posts(
 async def create_post(
     thread_id: int,
     post_data: ForumPostCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
+    moderation_service: ModerationService = Depends(get_moderation_service),
     db: AsyncSession = Depends(get_db)
 ):
+    moderation_result = moderation_service.check_content(post_data.content)
+
+    if moderation_result['is_flagged']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Post content flagged: {', '.join(moderation_result['reasons'])}"
+        )
+
     result = await db.execute(
         select(ForumThread).where(ForumThread.id == thread_id)
     )
@@ -258,6 +287,14 @@ async def create_post(
     db.add(db_post)
     await db.commit()
     await db.refresh(db_post, ["author"])
+
+    if moderation_result['requires_review']:
+        background_tasks.add_task(
+            _check_user_moderation_status,
+            db,
+            current_user.id,
+            moderation_service
+        )
 
     return ForumPostRead.model_validate(db_post)
 
@@ -352,7 +389,6 @@ async def get_my_threads(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get threads created by current user"""
     query = select(ForumThread).where(
         ForumThread.creator_id == current_user.id
     ).options(
@@ -377,7 +413,6 @@ async def get_my_posts(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get posts created by current user"""
     query = select(ForumPost).where(
         ForumPost.author_id == current_user.id
     ).options(
@@ -388,3 +423,62 @@ async def get_my_posts(
     posts = result.scalars().all()
 
     return [ForumPostRead.model_validate(post) for post in posts]
+
+async def _check_user_moderation_status(
+    db: AsyncSession,
+    user_id: int,
+    moderation_service: ModerationService
+):
+
+    try:
+        analysis = await moderation_service.moderate_user_content(user_id)
+
+        if analysis['needs_admin_review']:
+            print(f"🚨 User {user_id} flagged for admin review:")
+            print(f"   - Flagged items: {analysis['flagged_items']}")
+            print(f"   - Risk score: {analysis['average_risk_score']:.2f}")
+
+            # In production, you'd:
+            # 1. Add to moderation queue table
+            # 2. Send notification to admins
+            # 3. Potentially auto-suspend user if score is very high
+    except Exception as e:
+        print(f"⚠️ Background moderation check failed for user {user_id}: {e}")
+
+@router.get(
+    "/admin/flagged-content",
+    responses={
+        403: {"model": ErrorResponse, "description": "Admin access required"}
+    }
+)
+async def get_flagged_content(
+    limit: int = Query(20, ge=1, le=100),
+    current_admin: User = Depends(get_current_admin_user),
+    moderation_service: ModerationService = Depends(get_moderation_service),
+    db: AsyncSession = Depends(get_db)
+):
+    recent_posts = await db.execute(
+        select(ForumPost).options(selectinload(ForumPost.author))
+        .order_by(ForumPost.created_at.desc()).limit(100)
+    )
+    posts = recent_posts.scalars().all()
+
+    flagged_posts = []
+    for post in posts:
+        moderation_result = moderation_service.check_content(post.content)
+        if moderation_result['requires_review']:
+            flagged_posts.append({
+                'post_id': post.id,
+                'thread_id': post.thread_id,
+                'author': post.author.display_name,
+                'content_preview': post.content[:200] + "..." if len(post.content) > 200 else post.content,
+                'created_at': post.created_at,
+                'moderation': moderation_result
+            })
+
+    flagged_posts.sort(key=lambda x: x['moderation']['confidence'], reverse=True)
+
+    return {
+        'flagged_posts': flagged_posts[:limit],
+        'total_flagged': len(flagged_posts)
+    }

@@ -6,6 +6,10 @@ from typing import Optional
 from app.database import get_db
 from .auth import verify_token
 from ..models.user import User
+from ..services.event_service import EventService
+from ..services.matching_service import ServiceMatchingService
+from ..services.moderation_service import ModerationService
+from ..services.voting_service import VotingService
 
 security = HTTPBearer()
 
@@ -74,3 +78,15 @@ async def get_optional_current_user(
         return user
     except:
         return None
+
+async def get_event_service(db: AsyncSession = Depends(get_db)) -> EventService:
+    return EventService(db)
+
+async def get_matching_service(db: AsyncSession = Depends(get_db)) -> ServiceMatchingService:
+    return ServiceMatchingService(db)
+
+async def get_moderation_service(db: AsyncSession = Depends(get_db)) -> ModerationService:
+    return ModerationService(db)
+
+async def get_voting_service(db: AsyncSession = Depends(get_db)) -> VotingService:
+    return VotingService(db)

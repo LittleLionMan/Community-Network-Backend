@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
@@ -12,6 +12,7 @@ from app.models.user import User
 from app.schemas.comment import CommentCreate, CommentRead, CommentUpdate
 from app.schemas.common import ErrorResponse
 from app.core.dependencies import get_current_user, get_current_admin_user
+from app.services.moderation_service import ModerationService
 
 router = APIRouter()
 
@@ -90,16 +91,26 @@ async def get_comment(
     response_model=CommentRead,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid comment data"},
+        400: {"model": ErrorResponse, "description": "Invalid comment data or content flagged"},
         401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Parent resource not found"}
     }
 )
 async def create_comment(
     comment_data: CommentCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    moderation_service = ModerationService(db)
+    moderation_result = moderation_service.check_content(comment_data.content)
+
+    if moderation_result['is_flagged']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Content flagged for moderation: {', '.join(moderation_result['reasons'])}"
+        )
+
     parent_count = sum([
         1 for x in [comment_data.event_id, comment_data.service_id]
         if x is not None
@@ -167,13 +178,21 @@ async def create_comment(
     await db.commit()
     await db.refresh(db_comment, ["author", "replies"])
 
+    if moderation_result['requires_review']:
+        background_tasks.add_task(
+            _schedule_user_review,
+            db,
+            current_user.id,
+            moderation_result
+        )
+
     return CommentRead.model_validate(db_comment)
 
 @router.put(
     "/{comment_id}",
     response_model=CommentRead,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid comment data"},
+        400: {"model": ErrorResponse, "description": "Invalid comment data or content flagged"},
         401: {"model": ErrorResponse, "description": "Authentication required"},
         403: {"model": ErrorResponse, "description": "Not authorized to edit this comment"},
         404: {"model": ErrorResponse, "description": "Comment not found"}
@@ -185,6 +204,16 @@ async def update_comment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+
+    moderation_service = ModerationService(db)
+    moderation_result = moderation_service.check_content(comment_data.content)
+
+    if moderation_result['is_flagged']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Content flagged for moderation: {', '.join(moderation_result['reasons'])}"
+        )
+
     result = await db.execute(
         select(Comment).where(Comment.id == comment_id)
     )
@@ -269,3 +298,46 @@ async def get_my_comments(
     comments = result.scalars().all()
 
     return [CommentRead.model_validate(comment) for comment in comments]
+
+@router.get(
+    "/admin/moderation-queue",
+    responses={
+        403: {"model": ErrorResponse, "description": "Admin access required"}
+    }
+)
+async def get_moderation_queue(
+    limit: int = Query(20, ge=1, le=100),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    moderation_service = ModerationService(db)
+    queue = await moderation_service.get_moderation_queue(limit)
+
+    return {"moderation_queue": queue}
+
+@router.post(
+    "/admin/moderate-user/{user_id}",
+    responses={
+        403: {"model": ErrorResponse, "description": "Admin access required"}
+    }
+)
+async def moderate_user_content(
+    user_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    moderation_service = ModerationService(db)
+    analysis = await moderation_service.moderate_user_content(user_id)
+
+    return analysis
+
+async def _schedule_user_review(db: AsyncSession, user_id: int, moderation_result: dict):
+
+    moderation_service = ModerationService(db)
+    user_analysis = await moderation_service.moderate_user_content(user_id)
+
+    if user_analysis['needs_admin_review']:
+        # In production: Send notification to admins, add to review queue, etc.
+        print(f"🚨 User {user_id} needs admin review - Risk score: {user_analysis['average_risk_score']}")

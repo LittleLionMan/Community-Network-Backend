@@ -15,6 +15,7 @@ from app.schemas.poll import (
 from app.schemas.common import ErrorResponse
 from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
 from app.models.enums import PollType
+from app.services.voting_service import VotingService
 
 router = APIRouter()
 
@@ -86,10 +87,11 @@ async def get_polls(
 )
 async def get_poll(
     poll_id: int,
+    include_analysis: bool = Query(False, description="Include detailed vote analysis"),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user)
 ):
-    """Get specific poll with results"""
+
     query = select(Poll).where(
         Poll.id == poll_id
     ).options(
@@ -133,6 +135,11 @@ async def get_poll(
     if current_user and user_vote:
         poll_dict["user_vote"] = user_vote
 
+    if include_analysis:
+        voting_service = VotingService(db)
+        analysis = await voting_service.analyze_poll_results(poll_id)
+        poll_dict["analysis"] = analysis
+
     return PollRead(**poll_dict)
 
 @router.post(
@@ -148,9 +155,11 @@ async def get_poll(
 )
 async def create_poll(
     poll_data: PollCreate,
+    auto_suggest_duration: bool = Query(False, description="Auto-suggest optimal poll duration"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+
     if poll_data.poll_type == PollType.ADMIN and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -199,6 +208,16 @@ async def create_poll(
             detail="Poll cannot have more than 10 options"
         )
 
+    if auto_suggest_duration and not poll_data.ends_at:
+        voting_service = VotingService(db)
+        suggested_hours = await voting_service.suggest_poll_duration(
+            poll_type=poll_data.poll_type.value,
+            expected_participants=None
+        )
+
+        from datetime import datetime, timedelta
+        poll_data.ends_at = datetime.now() + timedelta(hours=suggested_hours)
+
     poll_dict = poll_data.model_dump(exclude={"options"})
     poll_dict["creator_id"] = current_user.id
 
@@ -216,7 +235,6 @@ async def create_poll(
         db.add(db_option)
 
     await db.commit()
-
     await db.refresh(db_poll, ["creator", "thread", "options"])
 
     poll_dict = PollRead.model_validate(db_poll).model_dump()
@@ -286,7 +304,12 @@ async def update_poll(
     await db.commit()
     await db.refresh(poll, ["creator", "thread", "options"])
 
-    return await get_poll(poll_id, db, current_user)
+    return await get_poll(
+        poll_id=poll_id,
+        include_analysis=False,
+        db=db,
+        current_user=current_user
+    )
 
 @router.delete(
     "/{poll_id}",
@@ -508,3 +531,52 @@ async def get_my_votes(
     votes = result.scalars().all()
 
     return [VoteRead.model_validate(vote) for vote in votes]
+
+@router.get(
+    "/my/stats",
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication required"}
+    }
+)
+async def get_my_voting_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    voting_service = VotingService(db)
+    stats = await voting_service.get_user_voting_stats(current_user.id)
+
+    return stats
+
+@router.get(
+    "/{poll_id}/results",
+    responses={
+        404: {"model": ErrorResponse, "description": "Poll not found"}
+    }
+)
+async def get_poll_results(
+    poll_id: int,
+    detailed: bool = Query(False, description="Include detailed analysis"),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Poll).where(Poll.id == poll_id))
+    poll = result.scalar_one_or_none()
+
+    if not poll:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Poll not found"
+        )
+
+    voting_service = VotingService(db)
+    results = await voting_service.analyze_poll_results(poll_id)
+
+    if not detailed:
+        return {
+            'poll_id': results['poll_id'],
+            'total_votes': results['total_votes'],
+            'winners': results['winners'],
+            'result_type': results['result_type']
+        }
+
+    return results

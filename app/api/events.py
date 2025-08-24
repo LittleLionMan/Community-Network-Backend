@@ -1,5 +1,5 @@
 # app/api/events.py
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, update, func
 from sqlalchemy.orm import selectinload
@@ -17,6 +17,7 @@ from app.schemas.user import UserSummary
 from app.schemas.common import ErrorResponse
 from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
 from app.models.enums import ParticipationStatus
+from app.services.event_service import EventService
 
 router = APIRouter()
 
@@ -241,6 +242,8 @@ async def join_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    event_service = EventService(db)
+
     result = await db.execute(
         select(Event).where(
             Event.id == event_id,
@@ -255,11 +258,11 @@ async def join_event(
             detail="Event not found"
         )
 
-    from datetime import datetime
-    if event.start_datetime <= datetime.now():
+    can_join, reason = await event_service.can_join_event(event, current_user)
+    if not can_join:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot join past events"
+            detail=reason
         )
 
     result = await db.execute(
@@ -271,25 +274,11 @@ async def join_event(
     existing_participation = result.scalar_one_or_none()
 
     if existing_participation:
-        if existing_participation.status == ParticipationStatus.REGISTERED:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Already joined this event"
-            )
-        else:
+        if existing_participation.status == ParticipationStatus.CANCELLED:
             existing_participation.status = ParticipationStatus.REGISTERED
             await db.commit()
             await db.refresh(existing_participation, ["user"])
             return EventParticipationRead.model_validate(existing_participation)
-
-    if event.max_participants:
-        active_count = len([p for p in event.participations
-                           if p.status == ParticipationStatus.REGISTERED])
-        if active_count >= event.max_participants:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Event is full"
-            )
 
     participation = EventParticipation(
         event_id=event_id,
@@ -420,3 +409,73 @@ async def get_my_joined_events(
     participations = result.scalars().all()
 
     return [EventParticipationRead.model_validate(p) for p in participations]
+
+@router.get(
+    "/my/stats",
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication required"}
+    }
+)
+async def get_my_event_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    event_service = EventService(db)
+    stats = await event_service.get_user_event_history(current_user.id)
+    return stats
+
+@router.post(
+    "/{event_id}/mark-attendance",
+    status_code=status.HTTP_200_OK,
+    responses={
+        403: {"model": ErrorResponse, "description": "Admin access required"},
+        404: {"model": ErrorResponse, "description": "Event not found"}
+    }
+)
+async def mark_attendance(
+    event_id: int,
+    user_ids: List[int],
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    event = await db.get(Event, event_id)
+    if not event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event not found"
+        )
+
+    await db.execute(
+        update(EventParticipation)
+        .where(
+            EventParticipation.event_id == event_id,
+            EventParticipation.user_id.in_(user_ids),
+            EventParticipation.status == ParticipationStatus.REGISTERED
+        )
+        .values(status=ParticipationStatus.ATTENDED)
+    )
+
+    await db.commit()
+
+    return {"message": f"Marked {len(user_ids)} participants as attended"}
+
+    @router.post(
+        "/{event_id}/process-completion",
+        status_code=status.HTTP_200_OK,
+        responses={
+            403: {"model": ErrorResponse, "description": "Admin access required"},
+            404: {"model": ErrorResponse, "description": "Event not found"}
+        }
+    )
+    async def process_event_completion(
+        event_id: int,
+        background_tasks: BackgroundTasks,
+        current_admin: User = Depends(get_current_admin_user),
+        db: AsyncSession = Depends(get_db)
+    ):
+
+        event_service = EventService(db)
+        background_tasks.add_task(event_service.auto_mark_attendance, event_id)
+
+        return {"message": "Event completion processing started"}
