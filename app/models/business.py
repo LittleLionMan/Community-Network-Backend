@@ -1,4 +1,3 @@
-# app/models/business.py - Optional enhanced models
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Float, Enum as SQLEnum
@@ -6,6 +5,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from enum import Enum
+from .user import User
+from .service import Service
+
 
 class ServiceInterest(Base):
     """Track when users express interest in services"""
@@ -22,7 +24,6 @@ class ServiceInterest(Base):
     service: Mapped["Service"] = relationship("Service")
 
 class ModerationAction(Base):
-    """Log moderation actions for audit trail"""
     __tablename__ = "moderation_actions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -41,7 +42,6 @@ class ModerationAction(Base):
     moderator: Mapped[Optional["User"]] = relationship("User")
 
 class UserEngagement(Base):
-    """Track user engagement metrics"""
     __tablename__ = "user_engagement"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -62,7 +62,6 @@ class UserEngagement(Base):
     user: Mapped["User"] = relationship("User")
 
 class DailyStats(Base):
-    """Daily platform statistics"""
     __tablename__ = "daily_stats"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

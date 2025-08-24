@@ -5,6 +5,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from .enums import ParticipationStatus
+from .user import User
+from .comment import Comment
 
 class EventCategory(Base):
     __tablename__ = "event_categories"

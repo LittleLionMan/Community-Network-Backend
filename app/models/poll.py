@@ -5,6 +5,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from .enums import PollType
+from .user import User
+from .forum import ForumThread
 
 class Poll(Base):
     __tablename__ = "polls"

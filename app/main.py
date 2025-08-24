@@ -12,6 +12,7 @@ from app.api import auth, users, event_categories, events, services, discussions
 
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
+from app.services.scheduler_service import scheduler_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
         if settings.DEBUG:
             logger.info("Running in debug mode - enhanced logging enabled")
 
+        scheduler_service.start()
         logger.info("Business logic services initialized")
 
     except Exception as e:
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Community Platform API shutting down")
+    scheduler_service.stop()
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -245,3 +248,14 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             "platform_version": settings.VERSION,
             "error": "Stats temporarily unavailable"
         }
+
+@app.post("/api/admin/tasks/trigger-cleanup")
+async def trigger_cleanup(
+    current_admin = Depends(get_current_admin_user)
+):
+    """Manual trigger for cleanup tasks"""
+    try:
+        await scheduler_service.daily_cleanup()
+        return {"message": "Cleanup triggered successfully"}
+    except Exception as e:
+        return {"message": f"Cleanup failed: {str(e)}"}
