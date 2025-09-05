@@ -35,7 +35,7 @@ class TokenRefresh(BaseModel):
     refresh_token: str
 
 class EmailVerification(BaseModel):
-    token: str
+    token: str = Field(..., description="Email verification token from URL")
 
 class PasswordReset(BaseModel):
     email: EmailStr
@@ -59,3 +59,6 @@ class PasswordResetConfirm(BaseModel):
 class EmailUpdate(BaseModel):
     new_email: EmailStr
     password: str
+
+class ResendVerification(BaseModel):
+    email: EmailStr

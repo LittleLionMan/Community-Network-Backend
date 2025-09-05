@@ -83,7 +83,7 @@ def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
         print(f"Failed to send email: {e}")
 
 def generate_verification_email(email: str, token: str, base_url: str = "http://localhost:8000") -> str:
-    verification_url = f"{base_url}/auth/verify-email?token={token}"
+    verification_url = f"{base_url}/api/auth/verify-email?token={token}"
     return f"""
     <html>
     <body>
@@ -98,7 +98,7 @@ def generate_verification_email(email: str, token: str, base_url: str = "http://
     """
 
 def generate_password_reset_email(email: str, token: str, base_url: str = "http://localhost:8000") -> str:
-    reset_url = f"{base_url}/auth/reset-password?token={token}"
+    reset_url = f"{base_url}/api/auth/reset-password?token={token}"
     return f"""
     <html>
     <body>

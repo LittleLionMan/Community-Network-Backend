@@ -31,6 +31,22 @@ async def get_current_user(
     if user_id is None:
         raise credentials_exception
 
+    user_id = payload.get("sub")
+    if user_id is None:
+        raise credentials_exception
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user: User | None = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise credentials_exception
+
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified. Please check your email and verify your account."
+        )
+
+    return user
+
     result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalar_one_or_none()
 

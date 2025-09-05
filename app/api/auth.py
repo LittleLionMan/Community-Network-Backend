@@ -3,13 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from fastapi.responses import HTMLResponse
 
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
 from app.services.auth import AuthService
 from app.schemas.auth import (
     UserRegister, UserLogin, TokenResponse, TokenRefresh,
-    EmailVerification, PasswordReset, PasswordResetConfirm, EmailUpdate
+    EmailVerification, PasswordReset, PasswordResetConfirm, EmailUpdate, ResendVerification
 )
 from app.schemas.user import UserPrivate
 from app.schemas.common import ErrorResponse
@@ -64,7 +65,6 @@ async def login(
 ):
     auth_service = AuthService(db)
 
-    # Authenticate user
     user = await auth_service.authenticate_user(login_data.email, login_data.password)
     if not user:
         raise HTTPException(
@@ -72,7 +72,13 @@ async def login(
             detail="Incorrect email or password"
         )
 
-    # Create tokens
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Email not verified. Please check your email and verify your account.",
+            headers={"X-User-Email": user.email}
+    )
+
     tokens = await auth_service.create_tokens(user)
     return tokens
 
@@ -126,7 +132,7 @@ async def logout_all(
     auth_service = AuthService(db)
     await auth_service.revoke_all_user_tokens(current_user.id)
 
-@router.post(
+@router.get(
     "/verify-email",
     status_code=status.HTTP_200_OK,
     responses={
@@ -136,47 +142,97 @@ async def logout_all(
 @limiter.limit("10/minute")
 async def verify_email(
     request: Request,
-    verification_data: EmailVerification,
+    token: str,
     db: AsyncSession = Depends(get_db)
 ):
+    verification_data = EmailVerification(token=token)
+
     auth_service = AuthService(db)
 
     try:
         success = await auth_service.verify_email(verification_data.token)
         if success:
-            return {"message": "Email verified successfully"}
+            return HTMLResponse("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>E-Mail bestätigt</title>
+                <meta charset="UTF-8">
+                <style>
+                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+                    .success { color: green; }
+                    .container { max-width: 500px; margin: 0 auto; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1 class="success">✅ E-Mail erfolgreich bestätigt!</h1>
+                    <p>Ihre E-Mail-Adresse wurde erfolgreich verifiziert.</p>
+                    <p>Sie können sich jetzt anmelden.</p>
+                    <p><a href="http://localhost:3000/auth/login">Zur Anmeldung</a></p>
+                </div>
+            </body>
+            </html>
+            """)
         else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email verification failed"
-            )
-    except HTTPException:
-        raise
+            return HTMLResponse("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Verifizierung fehlgeschlagen</title>
+                <meta charset="UTF-8">
+                <style>
+                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+                    .error { color: red; }
+                    .container { max-width: 500px; margin: 0 auto; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1 class="error">❌ Verifizierung fehlgeschlagen</h1>
+                    <p>Der Verifizierungslink ist ungültig oder abgelaufen.</p>
+                    <p>Bitte fordern Sie einen neuen Link an.</p>
+                </div>
+            </body>
+            </html>
+            """, status_code=400)
+    except HTTPException as e:
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Fehler</title>
+            <meta charset="UTF-8">
+        </head>
+        <body>
+            <h1>Fehler</h1>
+            <p>{e.detail}</p>
+        </body>
+        </html>
+        """, status_code=e.status_code)
 
 @router.post(
     "/resend-verification",
     status_code=status.HTTP_200_OK,
     responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"},
-        409: {"model": ErrorResponse, "description": "Email already verified"}
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
     }
 )
 @limiter.limit("3/hour")
 async def resend_verification(
     request: Request,
-    current_user = Depends(get_current_active_user),
+    email_data: ResendVerification,
     db: AsyncSession = Depends(get_db)
 ):
-    if current_user.email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already verified"
-        )
-
     auth_service = AuthService(db)
-    await auth_service._send_verification_email(current_user)
 
-    return {"message": "Verification email sent"}
+    result = await db.execute(select(User).where(User.email == email_data.email))
+    user = result.scalar_one_or_none()
+
+    if user and not user.email_verified and user.is_active:
+        await auth_service._send_verification_email(user)
+
+    return {"message": "If the email exists and is unverified, a verification email has been sent"}
 
 @router.post(
     "/forgot-password",

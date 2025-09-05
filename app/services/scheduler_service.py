@@ -45,7 +45,8 @@ class SchedulerService:
         async with AsyncSessionLocal() as db:
             try:
                 from app.models.auth import RefreshToken, EmailVerificationToken, PasswordResetToken
-                from sqlalchemy import delete
+                from app.models.user import User
+                from sqlalchemy import delete, select
 
                 cutoff_date = datetime.now() - timedelta(days=30)
 
@@ -58,8 +59,23 @@ class SchedulerService:
                 await db.execute(
                     delete(PasswordResetToken).where(PasswordResetToken.expires_at < cutoff_date)
                 )
+                user_cutoff_date = datetime.now() - timedelta(days=30)
+                result = await db.execute(
+                    select(User).where(
+                        User.email_verified == False,
+                        User.created_at < user_cutoff_date
+                    )
+                )
+                unverified_users = result.scalars().all()
+
+                deleted_count = 0
+                for user in unverified_users:
+                    await db.delete(user)
+                    deleted_count += 1
 
                 await db.commit()
+                if deleted_count > 0:
+                    logger.info(f"🗑️ Deleted {deleted_count} unverified accounts older than 30 days")
                 logger.info("✅ Daily cleanup completed")
 
             except Exception as e:

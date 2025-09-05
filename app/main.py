@@ -6,6 +6,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
+from dotenv import load_dotenv
+from pathlib import Path
+
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 from app.config import settings
 from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories
@@ -13,11 +18,6 @@ from app.api import auth, users, event_categories, events, services, discussions
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.services.scheduler_service import scheduler_service
-from dotenv import load_dotenv
-from pathlib import Path
-
-env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
