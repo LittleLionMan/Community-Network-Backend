@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
 import structlog
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -46,6 +47,8 @@ app = FastAPI(
     openapi_url="/api/openapi.json" if settings.DEBUG else None,
     lifespan=lifespan
 )
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,

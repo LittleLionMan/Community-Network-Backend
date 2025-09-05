@@ -18,7 +18,6 @@ class AuthService:
         self.db = db
 
     async def register_user(self, user_data: UserRegister) -> User:
-        # Check existing user
         result = await self.db.execute(
             select(User).where(
                 (User.email == user_data.email) | (User.display_name == user_data.display_name)
@@ -38,7 +37,6 @@ class AuthService:
                     detail="Display name already taken"
                 )
 
-        # Create new user
         hashed_password = get_password_hash(user_data.password)
         db_user = User(
             display_name=user_data.display_name,
@@ -55,7 +53,6 @@ class AuthService:
         await self.db.commit()
         await self.db.refresh(db_user)
 
-        # Send verification email
         await self._send_verification_email(db_user)
 
         return db_user
@@ -117,7 +114,6 @@ class AuthService:
                 detail="User not found or inactive"
             )
 
-        # Revoke old token
         await self.db.execute(
             update(RefreshToken)
             .where(RefreshToken.id == db_refresh_token.id)
@@ -201,7 +197,7 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user:
-            return True  # Don't reveal if email exists
+            return True
 
         reset_token = create_refresh_token()
         token_hash = hash_token(reset_token)
@@ -256,30 +252,23 @@ class AuthService:
         return False
 
     async def update_email(self, user: User, new_email: str, password: str) -> bool:
-        if not verify_password(password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Incorrect password"
-            )
+        try:
+            if not verify_password(password, user.password_hash):
+                raise ValueError("Invalid password")
 
-        result = await self.db.execute(
-            select(User).where(User.email == new_email, User.id != user.id)
-        )
-        existing_user = result.scalar_one_or_none()
+            user.email = new_email
+            user.email_verified = False
+            user.email_verified_at = None
 
-        if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already in use"
-            )
+            await self.db.commit()
 
-        user.email = new_email
-        user.email_verified = False
-        user.email_verified_at = None
-        await self.db.commit()
+            await self._send_verification_email(user)
 
-        await self._send_verification_email(user)
-        return True
+            return True
+
+        except Exception as e:
+            await self.db.rollback()
+            raise e
 
     async def delete_user_account(self, user: User) -> bool:
         await self.revoke_all_user_tokens(user.id)
@@ -305,3 +294,24 @@ class AuthService:
 
         email_body = generate_verification_email(user.email, verification_token)
         send_email(user.email, "E-Mail-Adresse bestätigen", email_body, is_html=True)
+
+    async def update_user_password(self, user_id: int, new_password: str) -> bool:
+            try:
+                result = await self.db.execute(
+                    select(User).where(User.id == user_id)
+                )
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    return False
+
+                user.password_hash = get_password_hash(new_password)
+
+                await self.db.commit()
+                await self.db.refresh(user)
+
+                return True
+
+            except Exception as e:
+                await self.db.rollback()
+                raise e

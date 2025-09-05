@@ -7,10 +7,11 @@ from fastapi.responses import HTMLResponse
 
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
+from app.core.auth import verify_password
 from app.services.auth import AuthService
 from app.schemas.auth import (
     UserRegister, UserLogin, TokenResponse, TokenRefresh,
-    EmailVerification, PasswordReset, PasswordResetConfirm, EmailUpdate, ResendVerification
+    EmailVerification, PasswordReset, PasswordResetConfirm, EmailUpdate, ResendVerification, PasswordUpdate
 )
 from app.schemas.user import UserPrivate
 from app.schemas.common import ErrorResponse
@@ -250,7 +251,6 @@ async def forgot_password(
     auth_service = AuthService(db)
     await auth_service.request_password_reset(reset_data.email)
 
-    # Always return success to prevent email enumeration
     return {"message": "If the email exists, a reset link has been sent"}
 
 @router.post(
@@ -284,8 +284,10 @@ async def reset_password(
     "/email",
     response_model=UserPrivate,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid password or email already in use"},
-        401: {"model": ErrorResponse, "description": "Authentication required"}
+        400: {"model": ErrorResponse, "description": "Invalid password"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        409: {"model": ErrorResponse, "description": "Email already in use"},
+        422: {"model": ErrorResponse, "description": "Invalid email format"}
     }
 )
 async def update_email(
@@ -296,11 +298,86 @@ async def update_email(
     auth_service = AuthService(db)
 
     try:
+        if not verify_password(email_data.password, current_user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect"
+            )
+
+        if not "@" in email_data.new_email or "." not in email_data.new_email.split("@")[1]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid email format"
+            )
+
+        result = await db.execute(
+            select(User).where(User.email == email_data.new_email)
+        )
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user and existing_user.id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email address already in use"
+            )
+
         await auth_service.update_email(current_user, email_data.new_email, email_data.password)
         await db.refresh(current_user)
+
         return current_user
+
+    except HTTPException:
+
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Email update failed"
+        )
+
+@router.put(
+    "/password",
+    response_model=dict,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid current password"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        422: {"model": ErrorResponse, "description": "Validation error"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
+    }
+)
+@limiter.limit("5/hour")
+async def update_password(
+    request: Request,
+    password_data: PasswordUpdate,
+    current_user = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    auth_service = AuthService(db)
+
+    try:
+        if not verify_password(password_data.current_password, current_user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect"
+            )
+
+        success = await auth_service.update_user_password(current_user.id, password_data.new_password)
+
+        if success:
+            return {"message": "Password updated successfully"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update password"
+            )
+
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Password update failed"
+        )
 
 @router.delete(
     "/account",

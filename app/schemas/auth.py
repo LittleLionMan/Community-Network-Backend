@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
-from datetime import datetime
+import re
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -62,3 +62,18 @@ class EmailUpdate(BaseModel):
 
 class ResendVerification(BaseModel):
     email: EmailStr
+
+class PasswordUpdate(BaseModel):
+    current_password: str = Field(..., min_length=1, description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password")
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        if not re.search(r'\d', v):
+            raise ValueError('New password must contain at least one digit')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('New password must contain at least one uppercase letter')
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('New password must contain at least one special character')
+        return v

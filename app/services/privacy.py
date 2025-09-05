@@ -30,7 +30,6 @@ class PrivacyService:
             "display_name": user.display_name
         }
 
-        # Conditional Fields basierend auf Privacy-Settings
         if not user.first_name_private and user.first_name:
             user_data["first_name"] = user.first_name
 
@@ -47,3 +46,14 @@ class PrivacyService:
             user_data["created_at"] = user.created_at
 
         return UserPublic(**user_data)
+
+    @staticmethod
+    async def check_field_visibility(user: User, field: str, viewer_id: Optional[int] = None) -> bool:
+        if viewer_id == user.id:
+            return True
+
+        privacy_field = f"{field}_private"
+        if hasattr(user, privacy_field):
+            return not getattr(user, privacy_field)
+
+        return True
