@@ -1,14 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
-from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from sqlalchemy import select
+from slowapi import Limiter
 from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-from typing import Any
 
 from app.database import get_db
-from app.core.dependencies import get_current_user, get_current_active_user
+from app.core.dependencies import get_current_active_user
 from app.services.auth import AuthService
 from app.schemas.auth import (
     UserRegister, UserLogin, TokenResponse, TokenRefresh,
@@ -16,6 +13,7 @@ from app.schemas.auth import (
 )
 from app.schemas.user import UserPrivate
 from app.schemas.common import ErrorResponse
+from ..models.user import User
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(tags=["authentication"])
@@ -289,3 +287,38 @@ async def auth_status():
             "rate_limiting": True
         }
     }
+
+@router.post(
+    "/check-availability",
+    responses={
+        200: {"description": "Availability checked"},
+        422: {"model": ErrorResponse, "description": "Validation error"}
+    }
+)
+@limiter.limit("30/minute")
+async def check_availability(
+    request: Request,
+    availability_data: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    email = availability_data.get("email")
+    display_name = availability_data.get("display_name")
+
+    if not email and not display_name:
+        return {"available": True}
+
+    if email:
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+        if result.scalar_one_or_none():
+            return {"available": False, "message": "E-Mail bereits vergeben"}
+
+    if display_name:
+        result = await db.execute(
+            select(User).where(User.display_name == display_name)
+        )
+        if result.scalar_one_or_none():
+            return {"available": False, "message": "Display Name bereits vergeben"}
+
+    return {"available": True}

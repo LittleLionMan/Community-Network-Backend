@@ -20,7 +20,20 @@ target_metadata = Base.metadata
 
 def get_url():
     from app.config import settings
-    return settings.DATABASE_URL.replace('+asyncpg', '+psycopg2')
+    db_url = settings.DATABASE_URL
+
+    # ✅ CRITICAL FIX: Convert async URLs to sync URLs
+    if db_url.startswith('sqlite+aiosqlite:'):
+        sync_url = db_url.replace('sqlite+aiosqlite:', 'sqlite:')
+        print(f"🔄 Converted URL for Alembic: aiosqlite -> sqlite")
+        return sync_url
+
+    if db_url.startswith('postgresql+asyncpg:'):
+        sync_url = db_url.replace('postgresql+asyncpg:', 'postgresql+psycopg2:')
+        print(f"🔄 Converted URL for Alembic: asyncpg -> psycopg2")
+        return sync_url
+
+    return db_url
 
 def run_migrations_offline() -> None:
     url = get_url()
@@ -35,8 +48,8 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
     configuration = config.get_section(config.config_ini_section, {})
+
     configuration["sqlalchemy.url"] = get_url()
 
     connectable = engine_from_config(
@@ -47,7 +60,8 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata
         )
 
         with context.begin_transaction():

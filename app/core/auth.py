@@ -21,7 +21,7 @@ SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-FROM_EMAIL = os.getenv("FROM_EMAIL", "noreply@localhost")
+FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -58,6 +58,9 @@ def verify_token(token: str, token_type: str = "access") -> Optional[Dict[str, A
 
 def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
     if not SMTP_USER or not SMTP_PASSWORD:
+        print(f"SMTP_USER: {SMTP_USER}")
+        print(f"SMTP_PASSWORD: {SMTP_PASSWORD}")
+        print("FROM_EMAIL:", repr(FROM_EMAIL))
         print(f"Email would be sent to {to_email}: {subject}")
         print(f"Body: {body}")
         return  # Skip actual sending in development

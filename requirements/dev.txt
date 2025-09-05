@@ -23,6 +23,3 @@ pre-commit==4.0.1
 watchfiles==1.0.3  # For auto-reload
 ipython==8.31.0    # Better REPL
 rich==13.9.4       # Pretty printing for debugging
-
-# Database Tools
-psycopg2-binary==2.9.10  # For direct DB access during development

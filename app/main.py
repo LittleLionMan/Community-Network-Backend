@@ -8,11 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 
 from app.config import settings
-from app.api import auth, users, event_categories, events, services, discussions, comments, polls
+from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories
 
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.services.scheduler_service import scheduler_service
+from dotenv import load_dotenv
+from pathlib import Path
+
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,6 +65,7 @@ app.include_router(services.router, prefix="/api/services", tags=["services"])
 app.include_router(discussions.router, prefix="/api/discussions", tags=["discussions"])
 app.include_router(comments.router, prefix="/api/comments", tags=["comments"])
 app.include_router(polls.router, prefix="/api/polls", tags=["polls"])
+app.include_router(forum_categories.router, prefix="/api/forum-categories", tags=["forum-categories"])
 
 @app.get("/health")
 async def health_check(request: Request):
