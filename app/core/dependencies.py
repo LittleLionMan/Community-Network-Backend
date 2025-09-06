@@ -10,6 +10,7 @@ from ..services.event_service import EventService
 from ..services.matching_service import ServiceMatchingService
 from ..services.moderation_service import ModerationService
 from ..services.voting_service import VotingService
+from ..services.message_service import MessageService
 
 security = HTTPBearer()
 
@@ -106,3 +107,29 @@ async def get_moderation_service(db: AsyncSession = Depends(get_db)) -> Moderati
 
 async def get_voting_service(db: AsyncSession = Depends(get_db)) -> VotingService:
     return VotingService(db)
+
+async def get_message_service(db: AsyncSession = Depends(get_db)) -> MessageService:
+    return MessageService(db)
+
+async def verify_message_permissions(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    if not current_user.messages_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Direct messages are disabled for your account"
+        )
+    return current_user
+
+async def verify_conversation_participant(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+    message_service: MessageService = Depends(get_message_service)
+) -> User:
+    participant = await message_service._get_participant(conversation_id, current_user.id)
+    if not participant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a participant in this conversation"
+        )
+    return current_user

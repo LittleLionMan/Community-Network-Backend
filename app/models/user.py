@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from .forum import ForumThread, ForumPost
     from .poll import Poll, Vote
     from .comment import Comment
+    from .message import Message, MessageReadReceipt, ConversationParticipant
 
 class User(Base):
     __tablename__ = "users"
@@ -40,6 +41,9 @@ class User(Base):
     location_private: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active_private: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    messages_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    messages_from_strangers: Mapped[bool] = mapped_column(Boolean, default=True)
+    messages_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
 
     events: Mapped[List["Event"]] = relationship("Event", back_populates="creator")
     participations: Mapped[List["EventParticipation"]] = relationship("EventParticipation", back_populates="user")
@@ -49,5 +53,9 @@ class User(Base):
     comments: Mapped[List["Comment"]] = relationship("Comment", back_populates="author")
     polls: Mapped[List["Poll"]] = relationship("Poll", back_populates="creator")
     votes: Mapped[List["Vote"]] = relationship("Vote", back_populates="user")
+    sent_messages: Mapped[List["Message"]] = relationship("Message", foreign_keys="Message.sender_id", back_populates="sender")
+    conversation_participants: Mapped[List["ConversationParticipant"]] = relationship("ConversationParticipant", back_populates="user")
+    moderated_messages: Mapped[List["Message"]] = relationship("Message", foreign_keys="Message.moderated_by", back_populates="moderator")
+    read_receipts: Mapped[List["MessageReadReceipt"]] = relationship("MessageReadReceipt", back_populates="user")
 
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")

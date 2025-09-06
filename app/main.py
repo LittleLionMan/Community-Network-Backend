@@ -14,7 +14,7 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 from app.config import settings
-from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories
+from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories, messages
 
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
@@ -69,6 +69,7 @@ app.include_router(discussions.router, prefix="/api/discussions", tags=["discuss
 app.include_router(comments.router, prefix="/api/comments", tags=["comments"])
 app.include_router(polls.router, prefix="/api/polls", tags=["polls"])
 app.include_router(forum_categories.router, prefix="/api/forum-categories", tags=["forum-categories"])
+app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 
 @app.get("/health")
 async def health_check(request: Request):
@@ -83,9 +84,11 @@ async def health_check(request: Request):
             "services": True,
             "forum": True,
             "polling": True,
+            "messages": True,
             "content_moderation": settings.CONTENT_MODERATION_ENABLED,
             "service_matching": getattr(settings, 'SERVICE_MATCHING_ENABLED', True),
-            "auto_attendance": getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True)
+            "auto_attendance": getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True),
+            "websocket_messaging": True
         }
     }
 
@@ -102,6 +105,7 @@ async def admin_dashboard(
     from app.models.comment import Comment
     from app.models.forum import ForumPost, ForumThread
     from app.models.poll import Poll, Vote
+    from app.models.message import Message, Conversation
 
     stats = {}
 
@@ -124,6 +128,21 @@ async def admin_dashboard(
         vote_count = await db.execute(select(func.count(Vote.id)))
         stats['total_polls'] = poll_count.scalar() or 0
         stats['total_votes'] = vote_count.scalar() or 0
+
+        message_count = await db.execute(select(func.count(Message.id)))
+        conversation_count = await db.execute(select(func.count(Conversation.id)))
+        active_conversations = await db.execute(
+            select(func.count(Conversation.id)).where(Conversation.is_active == True)
+        )
+        flagged_messages = await db.execute(
+            select(func.count(Message.id)).where(Message.is_flagged == True)
+        )
+
+        stats['total_messages'] = message_count.scalar() or 0
+        stats['total_conversations'] = conversation_count.scalar() or 0
+        stats['active_conversations'] = active_conversations.scalar() or 0
+        stats['flagged_messages'] = flagged_messages.scalar() or 0
+
 
         week_ago = datetime.now() - timedelta(days=7)
 
@@ -152,27 +171,36 @@ async def admin_dashboard(
             'total_forum_posts': 0,
             'total_polls': 0,
             'total_votes': 0,
+            'total_messages': 0,
             'recent_activity': {
                 'new_users_7d': 0,
                 'new_events_7d': 0,
-                'new_services_7d': 0
+                'new_services_7d': 0,
+                'new_messages_7d': 0
             },
             'error': str(e)
         }
 
+    from app.services.websocket_service import websocket_manager
+    ws_stats = websocket_manager.get_connection_stats()
+
     return {
         'platform_stats': stats,
+        'websocket_stats': ws_stats,
         'health': {
             'database': 'connected',
             'moderation': 'active' if settings.CONTENT_MODERATION_ENABLED else 'disabled',
-            'matching': 'active' if getattr(settings, 'SERVICE_MATCHING_ENABLED', True) else 'disabled'
+            'matching': 'active' if getattr(settings, 'SERVICE_MATCHING_ENABLED', True) else 'disabled',
+            'messaging': 'active',
+            'websockets': 'active'
         },
         'settings': {
             'debug_mode': settings.DEBUG,
             'content_moderation_enabled': settings.CONTENT_MODERATION_ENABLED,
             'moderation_threshold': getattr(settings, 'MODERATION_THRESHOLD', 0.7),
             'service_matching_enabled': getattr(settings, 'SERVICE_MATCHING_ENABLED', True),
-            'event_auto_attendance': getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True)
+            'event_auto_attendance': getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True),
+            'message_system_enabled': True
         }
     }
 
@@ -182,7 +210,6 @@ async def process_completed_events(
     current_admin = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-
     from app.services.event_service import EventService
     from app.models.event import Event
 
@@ -212,6 +239,33 @@ async def process_completed_events(
             "events_processed": 0
         }
 
+@app.post("/api/admin/tasks/cleanup-messages")
+async def cleanup_message_system(
+    current_admin = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.services.message_service import MessageService
+
+    try:
+        message_service = MessageService(db)
+
+        old_messages_count = await message_service.cleanup_old_messages(365)
+
+        empty_conversations_count = await message_service.cleanup_empty_conversations()
+
+        return {
+            "message": "Message system cleanup completed",
+            "old_messages_removed": old_messages_count,
+            "empty_conversations_removed": empty_conversations_count
+        }
+    except Exception as e:
+        return {
+            "message": "Message cleanup failed",
+            "error": str(e),
+            "old_messages_removed": 0,
+            "empty_conversations_removed": 0
+        }
+
 @app.get("/api/stats")
 async def public_platform_stats(db: AsyncSession = Depends(get_db)):
 
@@ -220,6 +274,7 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
     from app.models.event import Event
     from app.models.service import Service
     from app.models.poll import Poll
+    from app.models.message import Message, Conversation
 
     try:
         user_count = await db.execute(
@@ -241,6 +296,12 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             select(func.count(Poll.id)).where(Poll.is_active == True)
         )
 
+        recent_messages = await db.execute(
+            select(func.count(Message.id)).where(
+                Message.created_at > datetime.now() - timedelta(days=30)
+            )
+        )
+
         return {
             "community_size": user_count.scalar() or 0,
             "upcoming_events": active_events.scalar() or 0,
@@ -254,6 +315,7 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             "upcoming_events": 0,
             "active_services": 0,
             "active_polls": 0,
+            "recent_messages": 0,
             "platform_version": settings.VERSION,
             "error": "Stats temporarily unavailable"
         }
@@ -262,7 +324,6 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
 async def trigger_cleanup(
     current_admin = Depends(get_current_admin_user)
 ):
-    """Manual trigger for cleanup tasks"""
     try:
         await scheduler_service.daily_cleanup()
         return {"message": "Cleanup triggered successfully"}

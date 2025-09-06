@@ -6,6 +6,9 @@ import logging
 
 from app.database import AsyncSessionLocal
 from app.services.event_service import EventService
+from ..database import get_db
+from ..services.message_service import MessageService
+from ..services.websocket_service import websocket_manager
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,21 @@ class SchedulerService:
             func=self.process_event_attendance,
             trigger=CronTrigger(minute=0),
             id="event_attendance",
+            replace_existing=True
+        )
+
+        self.scheduler.add_job(
+            func=self.weekly_message_analytics_cleanup,
+            trigger=CronTrigger(day_of_week=6, hour=4, minute=0),
+            id="weekly_message_analytics_cleanup",
+            replace_existing=True
+        )
+
+        self.scheduler.add_job(
+            func=lambda: websocket_manager.cleanup_old_typing_status(10),
+            trigger='interval',
+            seconds=30,
+            id='websocket_typing_cleanup',
             replace_existing=True
         )
 
@@ -76,6 +94,10 @@ class SchedulerService:
                 await db.commit()
                 if deleted_count > 0:
                     logger.info(f"🗑️ Deleted {deleted_count} unverified accounts older than 30 days")
+
+                await self._cleanup_message_system()
+                websocket_manager.cleanup_old_typing_status()
+
                 logger.info("✅ Daily cleanup completed")
 
             except Exception as e:
@@ -113,5 +135,94 @@ class SchedulerService:
 
             except Exception as e:
                 logger.error(f"❌ Event attendance processing failed: {e}")
+
+
+    async def _cleanup_message_system(self):
+        """Clean up message system data."""
+        try:
+            from app.services.message_service import MessageService
+
+            async with AsyncSessionLocal() as db:
+                message_service = MessageService(db)
+
+                old_messages_count = await message_service.cleanup_old_messages(365)
+                if old_messages_count > 0:
+                    logger.info(f"🗑️ Cleaned up {old_messages_count} old deleted messages")
+
+                empty_conversations_count = await message_service.cleanup_empty_conversations()
+                if empty_conversations_count > 0:
+                    logger.info(f"🗑️ Cleaned up {empty_conversations_count} empty conversations")
+
+        except Exception as e:
+            logger.error(f"❌ Message system cleanup failed: {e}")
+
+    async def weekly_message_analytics_cleanup(self):
+        """Weekly cleanup for message analytics data."""
+        try:
+            logger.info("🧹 Starting weekly message analytics cleanup...")
+
+            async with AsyncSessionLocal() as db:
+                from sqlalchemy import delete, update
+                from app.models.message import Message
+
+                cutoff_date = datetime.now() - timedelta(days=180)
+
+                # FIX: Korrekte update() Syntax
+                await db.execute(
+                    update(Message)
+                    .where(
+                        Message.moderated_at < cutoff_date,
+                        Message.moderation_status == 'approved'
+                    )
+                    .values(
+                        moderation_reason=None,
+                        moderated_at=None,
+                        moderated_by=None
+                    )
+                )
+
+                await db.commit()
+                logger.info("✅ Weekly message analytics cleanup completed")
+
+        except Exception as e:
+            logger.error(f"❌ Weekly message analytics cleanup failed: {e}")
+
+    def setup_message_cleanup_jobs(self):
+        """Setup message-specific cleanup jobs."""
+        try:
+            # Daily message cleanup at 3 AM
+            self.scheduler.add_job(
+                self._cleanup_message_system,
+                'cron',
+                hour=3,
+                minute=0,
+                id='daily_message_cleanup',
+                replace_existing=True
+            )
+
+            # Weekly analytics cleanup on Sundays at 4 AM
+            self.scheduler.add_job(
+                self.weekly_message_analytics_cleanup,
+                'cron',
+                day_of_week=6,  # Sunday
+                hour=4,
+                minute=0,
+                id='weekly_message_analytics_cleanup',
+                replace_existing=True
+            )
+
+            # Clean up WebSocket typing statuses every 30 seconds
+            self.scheduler.add_job(
+                lambda: websocket_manager.cleanup_old_typing_status(10),
+                'interval',
+                seconds=30,
+                id='websocket_typing_cleanup',
+                replace_existing=True
+            )
+
+            logger.info("Message cleanup jobs scheduled successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to schedule message cleanup jobs: {e}")
 
 scheduler_service = SchedulerService()
