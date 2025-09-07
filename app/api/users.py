@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
@@ -13,6 +13,7 @@ from app.core.dependencies import get_current_active_user, get_optional_current_
 from app.core.auth import get_password_hash
 
 router = APIRouter()
+
 
 UPLOAD_DIR = Path("uploads/profile_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -201,6 +202,7 @@ async def list_users(
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,
+    messages_enabled_only: Optional[bool] = Query(False, description="Only return users with messages enabled"),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user)
 ):
@@ -212,6 +214,9 @@ async def list_users(
             User.first_name.ilike(f"%{search}%") |
             User.last_name.ilike(f"%{search}%")
         )
+
+    if messages_enabled_only:
+        query = query.where(User.messages_enabled == True)
 
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)

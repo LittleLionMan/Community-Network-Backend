@@ -72,6 +72,9 @@ class WebSocketManager:
             connections.discard(websocket)
         self.conversation_connections = {k: v for k, v in self.conversation_connections.items() if v}
 
+    def is_user_connected(self, user_id: int) -> bool:
+        return user_id in self.user_connections and len(self.user_connections[user_id]) > 0
+
     async def send_to_user(self, user_id: int, message: dict):
         if user_id not in self.user_connections:
             logger.debug(f"No connections found for user {user_id}")
@@ -156,6 +159,18 @@ class WebSocketManager:
             'type': 'unread_count_update',
             'total_unread': total_unread
         })
+
+    async def broadcast_privacy_change(self, user_id: int, messages_enabled: bool):
+        privacy_event = {
+            'type': 'privacy_settings_changed',
+            'user_id': user_id,
+            'messages_enabled': messages_enabled,
+            'timestamp': time.time()
+        }
+
+        await self.send_to_user(user_id, privacy_event)
+
+        logger.info(f"Privacy change broadcasted for user {user_id}")
 
     def get_connection_stats(self) -> dict:
         return {

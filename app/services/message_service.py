@@ -16,6 +16,7 @@ from ..schemas.message import (
 from ..schemas.user import UserSummary
 from .moderation_service import ModerationService
 from .websocket_service import websocket_manager
+from ..core.auth import send_email, generate_new_message_notification_email
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,8 @@ class MessageService:
 
         await self.db.commit()
 
+        await self._send_email_notifications(conversation_id, sender_id, message)
+
         message_response = await self._format_message(message, sender_id)
         await self._notify_conversation_participants(conversation_id, sender_id, {
             'type': 'new_message',
@@ -138,6 +141,91 @@ class MessageService:
         })
 
         return message_response
+
+    async def _send_email_notifications(self, conversation_id: int, sender_id: int, message: Message):
+        try:
+            sender_result = await self.db.execute(
+                select(User).where(User.id == sender_id)
+            )
+            sender = sender_result.scalar_one_or_none()
+            if not sender:
+                return
+
+            participants_query = (
+                select(ConversationParticipant)
+                .options(selectinload(ConversationParticipant.user))
+                .where(
+                    and_(
+                        ConversationParticipant.conversation_id == conversation_id,
+                        ConversationParticipant.user_id != sender_id
+                    )
+                )
+            )
+
+            result = await self.db.execute(participants_query)
+            participants = result.scalars().all()
+
+            for participant in participants:
+                recipient = participant.user
+
+                if not recipient.email_notifications_messages:
+                    continue
+
+                if websocket_manager.is_user_connected(recipient.id):
+                    logger.debug(f"User {recipient.id} is online, skipping email notification")
+                    continue
+
+                existing_unread_query = (
+                    select(func.count(Message.id))
+                    .where(
+                        and_(
+                            Message.conversation_id == conversation_id,
+                            Message.sender_id == sender_id,
+                            Message.is_deleted == False,
+                            Message.id != message.id,
+                            Message.id.not_in(
+                                select(MessageReadReceipt.message_id)
+                                .where(MessageReadReceipt.user_id == recipient.id)
+                            )
+                        )
+                    )
+                )
+
+                unread_result = await self.db.execute(existing_unread_query)
+                existing_unread_count = unread_result.scalar() or 0
+
+                if existing_unread_count == 0:
+                    await self._send_new_message_email(
+                        recipient=recipient,
+                        sender=sender,
+                        message_content=message.content
+                    )
+
+        except Exception as e:
+            logger.error(f"Failed to send email notifications: {e}")
+
+    async def _send_new_message_email(self, recipient: User, sender: User, message_content: str):
+        try:
+            recipient_name = recipient.first_name or recipient.display_name
+            sender_name = sender.first_name or sender.display_name
+
+            email_html = generate_new_message_notification_email(
+                recipient_name=recipient_name,
+                sender_name=sender_name,
+                message_preview=message_content,
+            )
+
+            send_email(
+                to_email=recipient.email,
+                subject=f"Neue Nachricht von {sender_name}",
+                body=email_html,
+                is_html=True
+            )
+
+            logger.info(f"Sent new message email to {recipient.email} from {sender.display_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to send email to {recipient.email}: {e}")
 
     async def get_conversations(self, user_id: int, page: int = 1, size: int = 20) -> ConversationListResponse:
         offset = (page - 1) * size

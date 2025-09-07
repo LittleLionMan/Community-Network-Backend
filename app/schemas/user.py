@@ -38,6 +38,10 @@ class UserUpdate(BaseModel):
     created_at_private: Optional[bool] = None
     is_active_private: Optional[bool] = None
 
+    email_notifications_events: Optional[bool] = None
+    email_notifications_messages: Optional[bool] = None
+    email_notifications_newsletter: Optional[bool] = None
+
 class UserSummary(BaseModel):
     id: int
     display_name: str
@@ -77,5 +81,9 @@ class UserPrivate(BaseModel):
     location_private: bool
     created_at_private: bool
     is_active_private: bool
+
+    email_notifications_events: bool
+    email_notifications_messages: bool
+    email_notifications_newsletter: bool
 
     model_config = ConfigDict(from_attributes = True)

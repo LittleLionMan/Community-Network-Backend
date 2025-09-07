@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import json
 import logging
+from datetime import datetime
 
 from ..database import get_db
 from ..core.dependencies import get_current_user, get_current_admin_user
@@ -154,27 +155,35 @@ async def check_can_message_user(
     current_user: User = Depends(get_current_user),
     message_service: MessageService = Depends(get_message_service)
 ):
+    from sqlalchemy import select
+
+    result = await message_service.db.execute(
+        select(User).where(User.id == user_id)
+    )
+    target_user = result.scalar_one_or_none()
+
+    if not target_user:
+        return {
+            "can_message": False,
+            "reason": "User not found",
+            "target_user_settings": {
+                "messages_enabled": False,
+                "messages_from_strangers": False,
+                "display_name": "Unknown"
+            }
+        }
+
     can_message, reason = await message_service.can_user_message(current_user.id, user_id)
+
     return {
         "can_message": can_message,
-        "reason": reason
+        "reason": reason,
+        "target_user_settings": {
+            "messages_enabled": target_user.messages_enabled,
+            "messages_from_strangers": target_user.messages_from_strangers,
+            "display_name": target_user.display_name
+        }
     }
-
-@router.put("/privacy-settings")
-async def update_message_privacy_settings(
-    settings: MessagePrivacySettings,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    if settings.messages_enabled is not None:
-        current_user.messages_enabled = settings.messages_enabled
-    if settings.messages_from_strangers is not None:
-        current_user.messages_from_strangers = settings.messages_from_strangers
-    if settings.messages_notifications is not None:
-        current_user.messages_notifications = settings.messages_notifications
-
-    await db.commit()
-    return {"message": "Privacy settings updated successfully"}
 
 @router.get("/privacy-settings")
 async def get_message_privacy_settings(
@@ -185,6 +194,40 @@ async def get_message_privacy_settings(
         "messages_from_strangers": current_user.messages_from_strangers,
         "messages_notifications": current_user.messages_notifications
     }
+
+@router.put("/privacy-settings")
+async def update_message_privacy_settings(
+    settings: MessagePrivacySettings,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    old_settings = {
+        'messages_enabled': current_user.messages_enabled,
+        'messages_from_strangers': current_user.messages_from_strangers,
+        'messages_notifications': current_user.messages_notifications
+    }
+
+    if settings.messages_enabled is not None:
+        current_user.messages_enabled = settings.messages_enabled
+    if settings.messages_from_strangers is not None:
+        current_user.messages_from_strangers = settings.messages_from_strangers
+    if settings.messages_notifications is not None:
+        current_user.messages_notifications = settings.messages_notifications
+
+    await db.commit()
+
+    critical_changes = (
+        old_settings['messages_enabled'] != current_user.messages_enabled or
+        old_settings['messages_from_strangers'] != current_user.messages_from_strangers
+    )
+
+    if critical_changes:
+        await websocket_manager.broadcast_privacy_change(
+            current_user.id,
+            current_user.messages_enabled
+        )
+
+    return {"message": "Privacy settings updated successfully"}
 
 @router.get("/moderation/flagged", dependencies=[Depends(get_current_admin_user)])
 async def get_flagged_messages(

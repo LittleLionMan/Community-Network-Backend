@@ -45,6 +45,10 @@ class User(Base):
     messages_from_strangers: Mapped[bool] = mapped_column(Boolean, default=True)
     messages_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    email_notifications_events: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_notifications_messages: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_notifications_newsletter: Mapped[bool] = mapped_column(Boolean, default=False)
+
     events: Mapped[List["Event"]] = relationship("Event", back_populates="creator")
     participations: Mapped[List["EventParticipation"]] = relationship("EventParticipation", back_populates="user")
     services: Mapped[List["Service"]] = relationship("Service", back_populates="user")
