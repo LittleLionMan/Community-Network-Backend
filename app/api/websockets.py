@@ -19,7 +19,6 @@ async def websocket_global(websocket: WebSocket):
 
 @router.websocket("/ws/poll/{poll_id}")
 async def websocket_poll(websocket: WebSocket, poll_id: int):
-    """Poll updates websocket"""
     await websocket_manager.connect(websocket, "polls", poll_id)
 
     try:

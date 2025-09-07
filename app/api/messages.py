@@ -146,7 +146,6 @@ async def get_unread_count(
     current_user: User = Depends(get_current_user),
     message_service: MessageService = Depends(get_message_service)
 ):
-    """Get unread message count across all conversations."""
     return await message_service.get_unread_count(current_user.id)
 
 @router.get("/check-can-message/{user_id}")

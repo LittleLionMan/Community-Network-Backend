@@ -106,6 +106,16 @@ class MessageService:
         self.db.add(message)
         await self.db.flush()
 
+        message_with_relations = await self.db.execute(
+            select(Message)
+            .options(
+                selectinload(Message.sender),
+                selectinload(Message.reply_to).selectinload(Message.sender)
+            )
+            .where(Message.id == message.id)
+        )
+        message = message_with_relations.scalar_one()
+
         conversation = await self.db.get(Conversation, conversation_id)
         if conversation:
             conversation.last_message_at = message.created_at
@@ -124,7 +134,7 @@ class MessageService:
         await self._notify_conversation_participants(conversation_id, sender_id, {
             'type': 'new_message',
             'conversation_id': conversation_id,
-            'message': message_response.model_dump()
+            'message': message_response.model_dump(mode='json')
         })
 
         return message_response
@@ -143,7 +153,8 @@ class MessageService:
                 )
             )
             .options(
-                selectinload(Conversation.participants).selectinload(ConversationParticipant.user)
+                selectinload(Conversation.participants).selectinload(ConversationParticipant.user),
+                selectinload(Conversation.messages).selectinload(Message.sender)
             )
             .order_by(desc(Conversation.last_message_at))
             .offset(offset)
@@ -190,9 +201,8 @@ class MessageService:
             .where(Conversation.id == conversation_id)
             .options(
                 selectinload(Conversation.participants).selectinload(ConversationParticipant.user),
-                selectinload(Conversation.messages)
-                .selectinload(Message.sender)
-                .options(selectinload(Message.read_receipts))
+                selectinload(Conversation.messages).selectinload(Message.sender),
+                selectinload(Conversation.messages).selectinload(Message.read_receipts)
             )
         )
 

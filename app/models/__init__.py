@@ -7,6 +7,7 @@ from .forum import ForumThread, ForumPost, ForumCategory
 from .comment import Comment
 from .poll import Poll, PollOption, Vote
 from .enums import ParticipationStatus, PollType
+from .message import Conversation, ConversationParticipant, Message, MessageReadReceipt
 
 __all__ = [
     "Base",
@@ -17,5 +18,6 @@ __all__ = [
     "ForumThread", "ForumPost", "ForumCategory",
     "Comment",
     "Poll", "PollOption", "Vote",
-    "ParticipationStatus", "PollType"
+    "ParticipationStatus", "PollType",
+    "Conversation", "ConversationParticipant", "Message", "MessageReadReceipt"
 ]
