@@ -1,8 +1,7 @@
-# app/services/auth.py
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update
 from fastapi import HTTPException, status
 from ..models.user import User
 from ..models.auth import RefreshToken, EmailVerificationToken, PasswordResetToken

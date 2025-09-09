@@ -1,62 +1,73 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, List
 import os
+from .core.config_validator import EnvironmentValidator
 
 class Settings(BaseSettings):
-    # App
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not os.getenv('SKIP_CONFIG_VALIDATION'):
+            EnvironmentValidator.validate_or_exit()
+
     APP_NAME: str = "Community Platform API"
     VERSION: str = "1.0.0"
     DEBUG: bool = False
+    ENVIRONMENT: str = "development"
 
-    # Database
-    DATABASE_URL: str
-    REDIS_URL: str = "redis://localhost:6379/0"
-
-    # Security
-    SECRET_KEY: str
+    SECRET_KEY: str  # ✅ Will be validated
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
-    # CORS
+    DATABASE_URL: str  # ✅ Will be validated
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    UPLOAD_DIR: str = "/app/uploads"
+    MAX_FILE_SIZE: int = 5242880  # 5MB
+    ALLOWED_IMAGE_EXTENSIONS: str = ".jpg,.jpeg,.png,.gif,.webp"
+
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
 
-    # Email
+    RATE_LIMIT_PER_MINUTE: int = 60
+    RATE_LIMIT_BURST: int = 10
+
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
+    FROM_EMAIL: str = "noreply@community-platform.local"
+    EMAIL_ENABLED: bool = False
+    EMAIL_VERIFICATION_REQUIRED: bool = True
 
-    # External APIs
     GEOCODING_API_KEY: Optional[str] = None
 
-    # Anti-Toxicity
     CONTENT_MODERATION_ENABLED: bool = True
     MODERATION_THRESHOLD: float = 0.7
     MODERATION_AUTO_FLAG_THRESHOLD: float = 0.9
-    MODERATION_REVIEW_THRESHOLD: float = 0.3
 
-    # Event Business Rules
+    CLAMAV_ENABLED: bool = False
+    CLAMAV_HOST: str = "localhost"
+    CLAMAV_PORT: int = 3310
+
+    LOG_LEVEL: str = "INFO"
+    SENTRY_DSN: Optional[str] = None
+    METRICS_ENABLED: bool = True
+
     EVENT_REGISTRATION_DEADLINE_HOURS: int = 24
     EVENT_AUTO_ATTENDANCE_ENABLED: bool = True
     EVENT_AUTO_ATTENDANCE_DELAY_HOURS: int = 1
 
-    # Service Matching Settings
     SERVICE_MATCHING_ENABLED: bool = True
     SERVICE_MATCHING_MAX_KEYWORDS: int = 5
-    SERVICE_RECOMMENDATIONS_LIMIT: int = 10
 
-    # Voting System Settings
     POLL_DEFAULT_DURATION_HOURS: int = 48
-    POLL_ADMIN_DURATION_HOURS: int = 168  # 1 week
+    POLL_ADMIN_DURATION_HOURS: int = 168
     POLL_MAX_OPTIONS: int = 10
-    POLL_MIN_OPTIONS: int = 2
 
-    # User Engagement Settings
     USER_INACTIVE_THRESHOLD_DAYS: int = 30
-    USER_HIGH_ENGAGEMENT_THRESHOLD: int = 15
+    MESSAGE_CLEANUP_DAYS: int = 365
 
-    # Rate Limiting
-    RATE_LIMIT_PER_MINUTE: int = 60
+    DB_ECHO: bool = False
+    DOCS_ENABLED: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -65,4 +76,16 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-settings = Settings() #type: ignore
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.lower() == 'production'
+
+    @property
+    def is_development(self) -> bool:
+        return self.ENVIRONMENT.lower() == 'development'
+
+    @property
+    def allowed_image_types(self) -> List[str]:
+        return [ext.strip() for ext in self.ALLOWED_IMAGE_EXTENSIONS.split(',')]
+
+settings = Settings()

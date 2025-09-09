@@ -1,4 +1,3 @@
-import pytest
 import pytest_asyncio
 import uuid
 import os
@@ -6,13 +5,17 @@ from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
-# ✅ Environment setup
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only-min-32-chars")
 os.environ.setdefault("DEBUG", "true")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
-os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "1000")  # ✅ Disable rate limiting for tests
+os.environ.setdefault("ENVIRONMENT", "testing")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")
+os.environ.setdefault("SKIP_CONFIG_VALIDATION", "true")
+
+os.environ["RATE_LIMIT_PER_MINUTE"] = "200"
 os.environ["CONTENT_MODERATION_ENABLED"] = "true"
+
+os.environ["UPLOAD_DIR"] = "/tmp/test_uploads"
 
 import sys
 from pathlib import Path
@@ -20,40 +23,39 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from app.main import app
-from app.database import get_db  # ✅ No more Base import here
-from app.models.base import Base  # ✅ Import Base directly from models
-# ✅ Import ALL models to ensure tables are created
-from app import models  # This imports all models from __init__.py
-from app.models import *  # Import everything explicitly
+from app.database import get_db
+from app.models.base import Base
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
-@pytest_asyncio.fixture  # ✅ Default function scope
+@pytest_asyncio.fixture
 async def async_engine():
-    """Create test database engine"""
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
         connect_args={"check_same_thread": False}
     )
 
-    # ✅ Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine
 
-    # ✅ Cleanup
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
         await engine.dispose()
-    except:
-        pass  # Ignore cleanup errors
+
+        import os
+        db_file = "./test.db"
+        if os.path.exists(db_file):
+            os.remove(db_file)
+
+    except Exception as e:
+        print(f"Test cleanup warning: {e}")
 
 @pytest_asyncio.fixture
 async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Create isolated test session"""
     async_session_maker = async_sessionmaker(
         bind=async_engine,
         class_=AsyncSession,
@@ -62,11 +64,10 @@ async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
 
     async with async_session_maker() as session:
         yield session
-        await session.rollback()  # ✅ Always rollback test changes
+        await session.rollback()
 
 @pytest_asyncio.fixture
 async def async_client(async_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    """Create test client with database override"""
     async def override_get_db():
         yield async_session
 
@@ -74,13 +75,13 @@ async def async_client(async_session: AsyncSession) -> AsyncGenerator[AsyncClien
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
-        base_url="http://test"
+        base_url="http://test",
+        timeout=30.0
     ) as ac:
         yield ac
 
     app.dependency_overrides.clear()
 
-# ✅ Simplified test data fixtures
 def _get_unique_user_data(base_name: str = "testuser"):
     unique_id = str(uuid.uuid4())[:8]
     return {

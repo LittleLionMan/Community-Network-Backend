@@ -3,13 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import json
 import logging
-from datetime import datetime
+import asyncio
+
 
 from ..database import get_db
 from ..core.dependencies import get_current_user, get_current_admin_user
 from ..models.user import User
 from ..services.message_service import MessageService
 from ..services.websocket_service import websocket_manager
+from ..services.websocket_auth_service import websocket_auth_manager
 from ..schemas.message import (
     ConversationCreate, MessageCreate, MessageUpdate,
     ConversationResponse, MessageResponse, ConversationDetailResponse,
@@ -259,21 +261,18 @@ async def websocket_conversation(
     token: str = Query(...),
     db: AsyncSession = Depends(get_db)
 ):
-    from ..core.auth import verify_token
-    payload = verify_token(token, token_type="access")
-    if not payload:
-        await websocket.close(code=4001)
-        return
 
-    user_id = payload.get("sub")
+    user_id = await websocket_auth_manager.authenticate_connection(
+        websocket, token, "conversation", conversation_id
+    )
+
     if not user_id:
-        await websocket.close(code=4001)
         return
 
     message_service = MessageService(db)
-    participant = await message_service._get_participant(conversation_id, int(user_id))
+    participant = await message_service._get_participant(conversation_id, user_id)
     if not participant:
-        await websocket.close(code=4003)
+        await websocket.close(code=4003, reason="Not a conversation participant")
         return
 
     await websocket_manager.connect(websocket, "conversation", conversation_id)
@@ -283,22 +282,27 @@ async def websocket_conversation(
             data = await websocket.receive_text()
             message_data = json.loads(data)
 
+            if await websocket_auth_manager.handle_websocket_message(websocket, message_data):
+                continue
+
             if message_data.get("type") == "typing":
                 await websocket_manager.broadcast_typing_status(
-                    conversation_id, int(user_id), message_data.get("is_typing", False)
+                    conversation_id, user_id, message_data.get("is_typing", False)
                 )
             elif message_data.get("type") == "mark_read":
                 message_id = message_data.get("message_id")
                 await message_service.mark_messages_as_read(
-                    int(user_id), conversation_id, message_id
+                    user_id, conversation_id, message_id
                 )
 
-    except WebSocketDisconnect:
-        websocket_manager.disconnect(websocket)
-        await websocket_manager.broadcast_typing_status(conversation_id, int(user_id), False)
+    except asyncio.CancelledError:
+        await websocket_auth_manager.disconnect(websocket, "Connection cancelled")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        print(f"WebSocket error: {e}")
+        await websocket_auth_manager.disconnect(websocket, f"Error: {str(e)}")
+    finally:
         websocket_manager.disconnect(websocket)
+        await websocket_auth_manager.disconnect(websocket)
 
 @router.websocket("/ws/user")
 async def websocket_user_notifications(

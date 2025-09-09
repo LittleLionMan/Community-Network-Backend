@@ -3,12 +3,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
 from pathlib import Path
-import uuid
 
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate
 from app.services.privacy import PrivacyService
+from app.services.file_service import FileUploadService
 from app.core.dependencies import get_current_active_user, get_optional_current_user
 from app.core.auth import get_password_hash
 
@@ -96,7 +96,7 @@ async def update_current_user(
         await db.commit()
         await db.refresh(current_user)
         return UserPrivate.model_validate(current_user)
-    except Exception as e:
+    except Exception:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -109,60 +109,28 @@ async def upload_profile_image(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    if not profile_image.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No file provided"
-        )
-
-    file_ext = Path(profile_image.filename).suffix.lower()
-    if file_ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File type not allowed. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
-        )
-
-    file_content = await profile_image.read()
-    if len(file_content) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File too large. Maximum size: 5MB"
-        )
-
-    file_path = None
+    file_service = FileUploadService()
 
     try:
-        file_id = str(uuid.uuid4())
-        filename = f"{current_user.id}_{file_id}{file_ext}"
-        file_path = UPLOAD_DIR / filename
+        file_path, public_url = await file_service.upload_profile_image(profile_image, current_user.id)
 
+        # ✅ Delete old image if exists
         if current_user.profile_image_url:
-            old_filename = current_user.profile_image_url.split('/')[-1]
-            old_file_path = UPLOAD_DIR / old_filename
-            if old_file_path.exists():
-                old_file_path.unlink()
+            await file_service.delete_profile_image(current_user.profile_image_url)
 
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_content)
-
-        profile_image_url = f"/uploads/profile_images/{filename}"
-        current_user.profile_image_url = profile_image_url
-
+        current_user.profile_image_url = public_url
         await db.commit()
-        await db.refresh(current_user)
 
         return {
-            "profile_image_url": profile_image_url,
+            "profile_image_url": public_url,
             "message": "Profile image uploaded successfully"
         }
 
-    except Exception as e:
-        await db.rollback()
-        if file_path and file_path.exists():
-            file_path.unlink()
-
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail="Failed to upload profile image"
         )
 
@@ -190,7 +158,7 @@ async def delete_profile_image(
 
         return {"message": "Profile image deleted successfully"}
 
-    except Exception as e:
+    except Exception:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
