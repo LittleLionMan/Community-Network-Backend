@@ -11,6 +11,9 @@ from ..core.auth import (
     hash_token, send_email, generate_verification_email, generate_password_reset_email,
     ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AuthService:
     def __init__(self, db: AsyncSession):
@@ -75,10 +78,13 @@ class AuthService:
         db_refresh_token = RefreshToken(
             token_hash=refresh_token_hash,
             user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+            expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+            is_revoked=False
         )
         self.db.add(db_refresh_token)
         await self.db.commit()
+
+        logger.info(f"Created new token pair for user {user.id}")
 
         return TokenResponse(
             access_token=access_token,
@@ -99,6 +105,7 @@ class AuthService:
         db_refresh_token = result.scalar_one_or_none()
 
         if not db_refresh_token:
+            logger.warning(f"Invalid refresh token attempt: {refresh_token_hash[:16]}...")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
@@ -108,6 +115,7 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user or not user.is_active:
+            logger.warning(f"Refresh token for inactive user: {db_refresh_token.user_id}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive"
@@ -119,10 +127,20 @@ class AuthService:
             .values(is_revoked=True)
         )
 
-        new_tokens = await self.create_tokens(user)
-        await self.db.commit()
+        try:
+            new_tokens = await self.create_tokens(user)
+            await self.db.commit()
 
-        return new_tokens
+            logger.info(f"Successfully rotated refresh token for user {user.id}")
+            return new_tokens
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Token rotation failed for user {user.id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Token refresh failed"
+            )
 
     async def revoke_refresh_token(self, user_id: int, refresh_token: str) -> bool:
         refresh_token_hash = hash_token(refresh_token)
@@ -143,6 +161,7 @@ class AuthService:
                 .values(is_revoked=True)
             )
             await self.db.commit()
+            logger.info(f"Revoked refresh token for user {user_id}")
             return True
         return False
 
@@ -153,7 +172,26 @@ class AuthService:
             .values(is_revoked=True)
         )
         await self.db.commit()
-        return result.rowcount
+
+        count = result.rowcount
+        logger.info(f"Revoked {count} refresh tokens for user {user_id}")
+        return count
+
+    async def cleanup_expired_tokens(self) -> int:
+        result = await self.db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.expires_at < datetime.now(timezone.utc),
+                RefreshToken.is_revoked == False
+            )
+            .values(is_revoked=True)
+        )
+        await self.db.commit()
+
+        count = result.rowcount
+        if count > 0:
+            logger.info(f"Cleaned up {count} expired refresh tokens")
+        return count
 
     async def verify_email(self, token: str) -> bool:
         token_hash = hash_token(token)
@@ -187,6 +225,7 @@ class AuthService:
             )
 
             await self.db.commit()
+            logger.info(f"Email verified for user {user.id}")
             return True
 
         return False
@@ -212,6 +251,7 @@ class AuthService:
         email_body = generate_password_reset_email(email, reset_token)
         send_email(email, "Passwort zurücksetzen", email_body, is_html=True)
 
+        logger.info(f"Password reset requested for user {user.id}")
         return True
 
     async def reset_password(self, token: str, new_password: str) -> bool:
@@ -246,6 +286,8 @@ class AuthService:
 
             await self.revoke_all_user_tokens(user.id)
             await self.db.commit()
+
+            logger.info(f"Password reset completed for user {user.id}")
             return True
 
         return False
@@ -262,6 +304,7 @@ class AuthService:
             await self.db.commit()
 
             await self._send_verification_email(user)
+            logger.info(f"Email updated for user {user.id}")
 
             return True
 
@@ -277,6 +320,7 @@ class AuthService:
         user.display_name = f"deleted_user_{user.id}"
 
         await self.db.commit()
+        logger.info(f"User account deleted: {user.id}")
         return True
 
     async def _send_verification_email(self, user: User):
@@ -295,22 +339,24 @@ class AuthService:
         send_email(user.email, "E-Mail-Adresse bestätigen", email_body, is_html=True)
 
     async def update_user_password(self, user_id: int, new_password: str) -> bool:
-            try:
-                result = await self.db.execute(
-                    select(User).where(User.id == user_id)
-                )
-                user = result.scalar_one_or_none()
+        try:
+            result = await self.db.execute(
+                select(User).where(User.id == user_id)
+            )
+            user = result.scalar_one_or_none()
 
-                if not user:
-                    return False
+            if not user:
+                return False
 
-                user.password_hash = get_password_hash(new_password)
+            user.password_hash = get_password_hash(new_password)
 
-                await self.db.commit()
-                await self.db.refresh(user)
+            await self.revoke_all_user_tokens(user_id)
+            await self.db.commit()
+            await self.db.refresh(user)
 
-                return True
+            logger.info(f"Password updated for user {user_id}")
+            return True
 
-            except Exception as e:
-                await self.db.rollback()
-                raise e
+        except Exception as e:
+            await self.db.rollback()
+            raise e

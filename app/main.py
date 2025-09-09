@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 import structlog
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -14,32 +15,43 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 from app.config import settings
-from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories, messages
-
+from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories, messages, admin_security
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.services.scheduler_service import scheduler_service
 
+from app.core.background_tasks import startup_background_tasks, shutdown_background_tasks, run_maintenance
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger = structlog.get_logger()
-    logger.info("Community Platform API starting up")
+    logger.info("🚀 Community Platform API starting up")
 
     try:
         if settings.DEBUG:
             logger.info("Running in debug mode - enhanced logging enabled")
 
         scheduler_service.start()
-        logger.info("Business logic services initialized")
+        logger.info("✅ Business logic services initialized")
+
+        await startup_background_tasks()
+        logger.info("✅ Background tasks started (token rotation enabled)")
 
     except Exception as e:
-        logger.error(f"Startup failed: {e}")
+        logger.error(f"❌ Startup failed: {e}")
         raise
 
     yield
 
-    logger.info("Community Platform API shutting down")
-    scheduler_service.stop()
+    logger.info("🛑 Community Platform API shutting down")
+
+    try:
+        scheduler_service.stop()
+
+        await shutdown_background_tasks()
+        logger.info("✅ All services stopped gracefully")
+    except Exception as e:
+        logger.error(f"❌ Shutdown error: {e}")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -70,16 +82,20 @@ app.include_router(comments.router, prefix="/api/comments", tags=["comments"])
 app.include_router(polls.router, prefix="/api/polls", tags=["polls"])
 app.include_router(forum_categories.router, prefix="/api/forum-categories", tags=["forum-categories"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
+app.include_router(admin_security.router, prefix="/api", tags=["admin-security"])
 
 @app.get("/health")
 async def health_check(request: Request):
-
     health_status = {
         "status": "healthy",
         "version": settings.VERSION,
         "timestamp": datetime.now().isoformat(),
         "features": {
             "authentication": True,
+            "refresh_token_rotation": True,
+            "security_monitoring": True,
+            "failed_login_protection": True,
+            "ip_blocking": True,
             "events": True,
             "services": True,
             "forum": True,
@@ -88,11 +104,28 @@ async def health_check(request: Request):
             "content_moderation": settings.CONTENT_MODERATION_ENABLED,
             "service_matching": getattr(settings, 'SERVICE_MATCHING_ENABLED', True),
             "auto_attendance": getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True),
-            "websocket_messaging": True
+            "websocket_messaging": True,
+            "background_tasks": True,
+            "token_cleanup": True,
+            "request_monitoring": True
         }
     }
 
     return health_status
+
+@app.get("/api/auth/token-status")
+async def token_rotation_status():
+    return {
+        "token_rotation_enabled": True,
+        "refresh_token_rotation": True,
+        "background_cleanup": True,
+        "security_features": [
+            "refresh_token_rotation",
+            "automatic_token_cleanup",
+            "concurrent_refresh_protection",
+            "replay_attack_prevention"
+        ]
+    }
 
 @app.get("/api/admin/dashboard")
 async def admin_dashboard(
@@ -103,9 +136,10 @@ async def admin_dashboard(
     from app.models.event import Event
     from app.models.service import Service
     from app.models.comment import Comment
-    from app.models.forum import ForumPost, ForumThread
+    from app.models.forum import ForumPost
     from app.models.poll import Poll, Vote
     from app.models.message import Message, Conversation
+    from app.models.auth import RefreshToken
 
     stats = {}
 
@@ -143,6 +177,13 @@ async def admin_dashboard(
         stats['active_conversations'] = active_conversations.scalar() or 0
         stats['flagged_messages'] = flagged_messages.scalar() or 0
 
+        active_tokens = await db.execute(
+            select(func.count(RefreshToken.id)).where(RefreshToken.is_revoked == False)
+        )
+        total_tokens = await db.execute(select(func.count(RefreshToken.id)))
+
+        stats['active_refresh_tokens'] = active_tokens.scalar() or 0
+        stats['total_refresh_tokens'] = total_tokens.scalar() or 0
 
         week_ago = datetime.now() - timedelta(days=7)
 
@@ -172,12 +213,42 @@ async def admin_dashboard(
             'total_polls': 0,
             'total_votes': 0,
             'total_messages': 0,
+            'active_refresh_tokens': 0,
+            'total_refresh_tokens': 0,
             'recent_activity': {
                 'new_users_7d': 0,
                 'new_events_7d': 0,
                 'new_services_7d': 0,
                 'new_messages_7d': 0
             },
+            'error': str(e)
+        }
+
+    try:
+        from app.services.security_service import SecurityService
+        security_service = SecurityService(db)
+
+        recent_events = await security_service.get_security_events(hours=24, limit=1000)
+
+        failed_logins_24h = len([e for e in recent_events if e.event_type.value == "failed_login"])
+        suspicious_activities_24h = len([e for e in recent_events if e.event_type.value == "suspicious_activity"])
+        high_priority_events_24h = len([e for e in recent_events if e.level.value in ["high", "critical"]])
+
+        stats['security_monitoring'] = {
+            'total_events_24h': len(recent_events),
+            'failed_logins_24h': failed_logins_24h,
+            'suspicious_activities_24h': suspicious_activities_24h,
+            'high_priority_events_24h': high_priority_events_24h,
+            'monitoring_active': True
+        }
+
+    except Exception as e:
+        stats['security_monitoring'] = {
+            'total_events_24h': 0,
+            'failed_logins_24h': 0,
+            'suspicious_activities_24h': 0,
+            'high_priority_events_24h': 0,
+            'monitoring_active': False,
             'error': str(e)
         }
 
@@ -192,7 +263,11 @@ async def admin_dashboard(
             'moderation': 'active' if settings.CONTENT_MODERATION_ENABLED else 'disabled',
             'matching': 'active' if getattr(settings, 'SERVICE_MATCHING_ENABLED', True) else 'disabled',
             'messaging': 'active',
-            'websockets': 'active'
+            'websockets': 'active',
+            'token_rotation': 'active',
+            'security_monitoring_enabled': True,
+            'failed_login_protection': True,
+            'request_monitoring': True
         },
         'settings': {
             'debug_mode': settings.DEBUG,
@@ -200,9 +275,30 @@ async def admin_dashboard(
             'moderation_threshold': getattr(settings, 'MODERATION_THRESHOLD', 0.7),
             'service_matching_enabled': getattr(settings, 'SERVICE_MATCHING_ENABLED', True),
             'event_auto_attendance': getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True),
-            'message_system_enabled': True
+            'message_system_enabled': True,
+            'refresh_token_rotation': True
         }
     }
+
+@app.post("/api/admin/maintenance/tokens")
+async def trigger_token_maintenance(current_admin = Depends(get_current_admin_user)):
+    try:
+        await run_maintenance()
+        return {
+            "status": "success",
+            "message": "Token maintenance completed successfully"
+        }
+    except Exception as e:
+        logger = structlog.get_logger()
+        logger.error(f"Manual token maintenance failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "Token maintenance failed",
+                "error": str(e)
+            }
+        )
 
 @app.post("/api/admin/tasks/process-events")
 async def process_completed_events(
@@ -266,15 +362,153 @@ async def cleanup_message_system(
             "empty_conversations_removed": 0
         }
 
+@app.get("/api/admin/security-overview")
+async def security_overview(
+    current_admin = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        from app.services.security_service import SecurityService
+        security_service = SecurityService(db)
+
+        events_24h = await security_service.get_security_events(hours=24, limit=1000)
+
+        events_7d = await security_service.get_security_events(hours=168, limit=5000)
+
+        failed_logins_24h = len([e for e in events_24h if e.event_type.value == "failed_login"])
+        failed_logins_7d = len([e for e in events_7d if e.event_type.value == "failed_login"])
+
+        suspicious_24h = len([e for e in events_24h if e.event_type.value == "suspicious_activity"])
+        suspicious_7d = len([e for e in events_7d if e.event_type.value == "suspicious_activity"])
+
+        failed_login_events = [e for e in events_24h if e.event_type.value == "failed_login"]
+        ip_counts = {}
+        for event in failed_login_events:
+            ip = event.ip_address
+            ip_counts[ip] = ip_counts.get(ip, 0) + 1
+
+        top_failed_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        health_score = 100
+        if failed_logins_24h > 50:
+            health_score -= 20
+        if suspicious_24h > 20:
+            health_score -= 15
+        if len([e for e in events_24h if e.level.value in ["high", "critical"]]) > 5:
+            health_score -= 25
+
+        health_score = max(0, health_score)
+
+        return {
+            "security_health_score": health_score,
+            "status": "healthy" if health_score >= 80 else "warning" if health_score >= 60 else "critical",
+            "metrics_24h": {
+                "total_events": len(events_24h),
+                "failed_logins": failed_logins_24h,
+                "suspicious_activities": suspicious_24h,
+                "high_priority_events": len([e for e in events_24h if e.level.value in ["high", "critical"]])
+            },
+            "trends_7d": {
+                "total_events": len(events_7d),
+                "failed_logins": failed_logins_7d,
+                "suspicious_activities": suspicious_7d,
+                "daily_average_events": len(events_7d) // 7
+            },
+            "top_threats": {
+                "failed_login_ips": top_failed_ips,
+                "blocked_ips_count": await get_blocked_ips_count(security_service)
+            },
+            "recommendations": generate_security_recommendations(
+                failed_logins_24h, suspicious_24h, health_score
+            )
+        }
+
+    except Exception as e:
+        return {
+            "error": "Failed to generate security overview",
+            "detail": str(e),
+            "security_health_score": 0,
+            "status": "error"
+        }
+
+async def get_blocked_ips_count(security_service) -> int:
+    try:
+        blocked_keys = await security_service._redis_keys("blocked_ip:*")
+        return len(blocked_keys)
+    except:
+        return 0
+
+def generate_security_recommendations(failed_logins: int, suspicious: int, health_score: int) -> list:
+    recommendations = []
+
+    if failed_logins > 50:
+        recommendations.append({
+            "priority": "high",
+            "title": "High Failed Login Activity",
+            "description": f"{failed_logins} failed logins in 24h. Consider reviewing login security.",
+            "action": "Review top failing IPs and consider IP blocking"
+        })
+
+    if suspicious > 20:
+        recommendations.append({
+            "priority": "medium",
+            "title": "Suspicious Activity Detected",
+            "description": f"{suspicious} suspicious activities detected.",
+            "action": "Review security events and investigate patterns"
+        })
+
+    if health_score < 70:
+        recommendations.append({
+            "priority": "high",
+            "title": "Security Health Score Low",
+            "description": f"Current security score: {health_score}/100",
+            "action": "Immediate security review recommended"
+        })
+
+    if not recommendations:
+        recommendations.append({
+            "priority": "low",
+            "title": "Security Status Good",
+            "description": "No immediate security concerns detected",
+            "action": "Continue monitoring"
+        })
+
+    return recommendations
+
+@app.post("/api/admin/tasks/trigger-cleanup")
+async def trigger_cleanup(
+    current_admin = Depends(get_current_admin_user)
+):
+    try:
+        await scheduler_service.daily_cleanup()
+
+        await run_maintenance()
+
+        return {"message": "Cleanup triggered successfully (including token cleanup)"}
+    except Exception as e:
+        return {"message": f"Cleanup failed: {str(e)}"}
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger = structlog.get_logger()
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "detail": "An unexpected error occurred"
+        }
+    )
+
 @app.get("/api/stats")
 async def public_platform_stats(db: AsyncSession = Depends(get_db)):
-
     from sqlalchemy import func, select
     from app.models.user import User
     from app.models.event import Event
     from app.models.service import Service
     from app.models.poll import Poll
-    from app.models.message import Message, Conversation
+    from app.models.message import Message
 
     try:
         user_count = await db.execute(
@@ -307,7 +541,8 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             "upcoming_events": active_events.scalar() or 0,
             "active_services": active_services.scalar() or 0,
             "active_polls": active_polls.scalar() or 0,
-            "platform_version": settings.VERSION
+            "platform_version": settings.VERSION,
+            "security_features": ["refresh_token_rotation", "automatic_cleanup"]
         }
     except Exception as e:
         return {
@@ -319,13 +554,3 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             "platform_version": settings.VERSION,
             "error": "Stats temporarily unavailable"
         }
-
-@app.post("/api/admin/tasks/trigger-cleanup")
-async def trigger_cleanup(
-    current_admin = Depends(get_current_admin_user)
-):
-    try:
-        await scheduler_service.daily_cleanup()
-        return {"message": "Cleanup triggered successfully"}
-    except Exception as e:
-        return {"message": f"Cleanup failed: {str(e)}"}
