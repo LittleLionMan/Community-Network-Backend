@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, update
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 
@@ -11,7 +11,8 @@ from app.schemas.service import (
     ServiceCreate, ServiceRead, ServiceUpdate, ServiceSummary
 )
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
+from app.core.dependencies import get_current_user, get_optional_current_user
+from app.core.rate_limit_decorator import service_create_rate_limit, read_rate_limit
 from app.services.matching_service import ServiceMatchingService
 
 router = APIRouter()
@@ -22,7 +23,9 @@ router = APIRouter()
     summary="Get all services",
     description="Public endpoint to retrieve all active services with pagination and filters"
 )
+@read_rate_limit("service_listing")
 async def get_services(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     is_offering: Optional[bool] = Query(None, description="Filter by offering/seeking"),
@@ -61,7 +64,9 @@ async def get_services(
         404: {"model": ErrorResponse, "description": "Service not found"}
     }
 )
+@read_rate_limit("service_listing")
 async def get_service(
+    request: Request,
     service_id: int,
     db: AsyncSession = Depends(get_db)
 ):
@@ -90,7 +95,9 @@ async def get_service(
         401: {"model": ErrorResponse, "description": "Authentication required"}
     }
 )
+@service_create_rate_limit
 async def create_service(
+    request: Request,
     service_data: ServiceCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)

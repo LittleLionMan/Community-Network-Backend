@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
@@ -10,6 +10,7 @@ from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate
 from app.services.privacy import PrivacyService
 from app.services.file_service import FileUploadService
 from app.core.dependencies import get_current_active_user, get_optional_current_user
+from app.core.rate_limit_decorator import read_rate_limit
 from app.core.auth import get_password_hash
 
 router = APIRouter()
@@ -50,7 +51,9 @@ async def create_user(
     return UserPrivate.model_validate(db_user)
 
 @router.get("/{user_id}", response_model=UserPublic | UserPrivate)
+@read_rate_limit("user_profile")
 async def get_user(
+    request: Request,
     user_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user)
@@ -166,7 +169,9 @@ async def delete_profile_image(
         )
 
 @router.get("/", response_model=List[UserPublic])
+@read_rate_limit("user_search")
 async def list_users(
+    request: Request,
     skip: int = 0,
     limit: int = 100,
     search: Optional[str] = None,

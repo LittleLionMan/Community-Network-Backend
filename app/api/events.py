@@ -1,7 +1,6 @@
-# app/api/events.py
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, update, func
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 
@@ -9,13 +8,11 @@ from app.database import get_db
 from app.models.event import Event, EventCategory, EventParticipation
 from app.models.user import User
 from app.schemas.event import (
-    EventCreate, EventRead, EventUpdate, EventSummary,
-    EventParticipationCreate, EventParticipationRead, EventParticipationUpdate,
-    EventCategoryRead
+    EventCreate, EventRead, EventUpdate, EventSummary, EventParticipationRead
 )
-from app.schemas.user import UserSummary
 from app.schemas.common import ErrorResponse
 from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
+from app.core.rate_limit_decorator import event_create_rate_limit, comment_rate_limit, read_rate_limit
 from app.models.enums import ParticipationStatus
 from app.services.event_service import EventService
 
@@ -27,7 +24,9 @@ router = APIRouter()
     summary="Get all events",
     description="Public endpoint to retrieve all active events with pagination"
 )
+@read_rate_limit("event_listing")
 async def get_events(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     category_id: Optional[int] = Query(None),
@@ -71,7 +70,9 @@ async def get_events(
         404: {"model": ErrorResponse, "description": "Event not found"}
     }
 )
+@read_rate_limit("event_listing")
 async def get_event(
+    request: Request,
     event_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user)
@@ -113,7 +114,9 @@ async def get_event(
         404: {"model": ErrorResponse, "description": "Category not found"}
     }
 )
+@event_create_rate_limit
 async def create_event(
+    request: Request,
     event_data: EventCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)

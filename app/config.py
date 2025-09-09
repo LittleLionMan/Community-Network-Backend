@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 from typing import Optional, List
 import os
 from .core.config_validator import EnvironmentValidator
@@ -25,7 +26,9 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE: int = 5242880  # 5MB
     ALLOWED_IMAGE_EXTENSIONS: str = ".jpg,.jpeg,.png,.gif,.webp"
 
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    BACKEND_CORS_ORIGINS: List[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8080", "http://127.0.0.1:3000"]
+    )
 
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 10
@@ -87,5 +90,19 @@ class Settings(BaseSettings):
     @property
     def allowed_image_types(self) -> List[str]:
         return [ext.strip() for ext in self.ALLOWED_IMAGE_EXTENSIONS.split(',')]
+
+    @property
+    def cors_origins(self) -> List[str]:
+        if self.is_development:
+            return [
+                "http://localhost:3000",
+                "http://localhost:8080",
+                "http://127.0.0.1:3000"
+            ]
+        else:
+            cors_env = os.getenv("CORS_ORIGINS", "")
+            if cors_env:
+                return [origin.strip() for origin in cors_env.split(",") if origin.strip()]
+            return self.BACKEND_CORS_ORIGINS
 
 settings = Settings()

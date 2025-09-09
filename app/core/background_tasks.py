@@ -1,5 +1,3 @@
-# app/core/background_tasks.py - Token Cleanup & Maintenance Tasks
-
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -8,6 +6,7 @@ from sqlalchemy import delete
 from ..database import get_db
 from ..models.auth import EmailVerificationToken, PasswordResetToken
 from ..services.auth import AuthService
+from .monitoring import run_rate_limit_monitoring
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +23,11 @@ class BackgroundTaskManager:
         self.running = True
         logger.info("Starting background tasks...")
 
-        task = asyncio.create_task(self._token_cleanup_loop())
-        self.tasks.append(task)
+        task1 = asyncio.create_task(self._token_cleanup_loop())
+        self.tasks.append(task1)
+
+        task2 = asyncio.create_task(self._monitoring_loop())
+        self.tasks.append(task2)
 
         logger.info(f"Started {len(self.tasks)} background tasks")
 
@@ -56,6 +58,25 @@ class BackgroundTaskManager:
             except Exception as e:
                 logger.error(f"Token cleanup error: {e}")
                 await asyncio.sleep(300)
+
+    async def _monitoring_loop(self):
+        while self.running:
+            try:
+                health_report = await run_rate_limit_monitoring()
+
+                if health_report and health_report["health_score"] < 60:
+                    logger.warning(
+                        f"Rate limiting health degraded: {health_report['health_score']}/100",
+                        extra={"health_report": health_report}
+                    )
+
+                await asyncio.sleep(1800)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Rate limit monitoring error: {e}")
+                await asyncio.sleep(600)
 
     async def _cleanup_expired_tokens(self):
         async for db in get_db():
@@ -105,6 +126,12 @@ class BackgroundTaskManager:
     async def run_maintenance_now(self):
         logger.info("Running manual maintenance...")
         await self._cleanup_expired_tokens()
+        try:
+            health_report = await run_rate_limit_monitoring()
+            if health_report is not None:
+                logger.info(f"Rate limiting health: {health_report['health_score']}/100")
+        except Exception as e:
+            logger.error(f"Monitoring check failed: {e}")
         logger.info("Manual maintenance completed")
 
 background_tasks = BackgroundTaskManager()

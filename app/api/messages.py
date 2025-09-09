@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import json
@@ -8,6 +8,7 @@ import asyncio
 
 from ..database import get_db
 from ..core.dependencies import get_current_user, get_current_admin_user
+from app.core.rate_limit_decorator import message_rate_limit, conversation_rate_limit, read_rate_limit
 from ..models.user import User
 from ..services.message_service import MessageService
 from ..services.websocket_service import websocket_manager
@@ -27,7 +28,9 @@ async def get_message_service(db: AsyncSession = Depends(get_db)) -> MessageServ
     return MessageService(db)
 
 @router.post("/conversations", response_model=ConversationResponse)
+@conversation_rate_limit
 async def create_conversation(
+    request: Request,
     data: ConversationCreate,
     current_user: User = Depends(get_current_user),
     message_service: MessageService = Depends(get_message_service)
@@ -39,7 +42,9 @@ async def create_conversation(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.get("/conversations", response_model=ConversationListResponse)
+@read_rate_limit("message_history")
 async def get_conversations(
+    request: Request,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -77,7 +82,9 @@ async def update_conversation_settings(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 @router.post("/conversations/{conversation_id}/messages", response_model=MessageResponse)
+@message_rate_limit
 async def send_message(
+    request: Request,
     conversation_id: int,
     data: MessageCreate,
     current_user: User = Depends(get_current_user),
@@ -90,7 +97,9 @@ async def send_message(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.get("/conversations/{conversation_id}/messages", response_model=MessageListResponse)
+@read_rate_limit("message_history")
 async def get_messages(
+    request: Request,
     conversation_id: int,
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=100),

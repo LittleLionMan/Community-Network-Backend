@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
@@ -12,6 +12,7 @@ from app.models.user import User
 from app.schemas.comment import CommentCreate, CommentRead, CommentUpdate
 from app.schemas.common import ErrorResponse
 from app.core.dependencies import get_current_user, get_current_admin_user
+from app.core.rate_limit_decorator import comment_rate_limit, read_rate_limit
 from app.services.moderation_service import ModerationService
 
 router = APIRouter()
@@ -22,7 +23,9 @@ router = APIRouter()
     summary="Get comments",
     description="Get comments for events, services, or forum threads with optional parent filtering"
 )
+@read_rate_limit("general_api")
 async def get_comments(
+    Request: Request,
     event_id: Optional[int] = Query(None),
     service_id: Optional[int] = Query(None),
     parent_id: Optional[int] = Query(None, description="Get replies to specific comment"),
@@ -96,7 +99,9 @@ async def get_comment(
         404: {"model": ErrorResponse, "description": "Parent resource not found"}
     }
 )
+@comment_rate_limit
 async def create_comment(
+    request: Request,
     comment_data: CommentCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),

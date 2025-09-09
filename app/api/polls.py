@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
-from typing import List, Optional, Dict
+from typing import List, Optional
 
 from app.database import get_db
 from app.models.poll import Poll, PollOption, Vote
@@ -13,7 +13,8 @@ from app.schemas.poll import (
     PollOptionRead, VoteCreate, VoteRead
 )
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
+from app.core.dependencies import get_current_user, get_optional_current_user
+from app.core.rate_limit_decorator import poll_create_rate_limit, poll_vote_rate_limit, read_rate_limit
 from app.models.enums import PollType
 from app.services.voting_service import VotingService
 
@@ -25,7 +26,9 @@ router = APIRouter()
     summary="Get all polls",
     description="Public endpoint to retrieve all active polls with pagination and filtering"
 )
+@read_rate_limit("general_api")
 async def get_polls(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     poll_type: Optional[PollType] = Query(None, description="Filter by poll type"),
@@ -33,7 +36,6 @@ async def get_polls(
     thread_id: Optional[int] = Query(None, description="Filter by thread"),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get all polls (public endpoint with filters)"""
     query = select(Poll)
 
     if active_only:
@@ -153,7 +155,9 @@ async def get_poll(
         404: {"model": ErrorResponse, "description": "Thread not found"}
     }
 )
+@poll_create_rate_limit
 async def create_poll(
+    request: Request,
     poll_data: PollCreate,
     auto_suggest_duration: bool = Query(False, description="Auto-suggest optimal poll duration"),
     current_user: User = Depends(get_current_user),
@@ -357,7 +361,9 @@ async def delete_poll(
         404: {"model": ErrorResponse, "description": "Poll not found"}
     }
 )
+@poll_vote_rate_limit
 async def vote_on_poll(
+    request: Request,
     poll_id: int,
     vote_data: VoteCreate,
     current_user: User = Depends(get_current_user),

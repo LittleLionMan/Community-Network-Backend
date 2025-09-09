@@ -7,20 +7,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import time
 import logging
-from typing import Optional, Dict, Any
-from .rate_limiting import AdvancedRateLimiter
-from ..database import redis_client
+from .logging import SecurityLogger, get_client_ip
 from ..config import settings
 
-advanced_limiter = AdvancedRateLimiter(redis_client)
+from .logging import rate_limiter as advanced_limiter
 
 def get_rate_limit_key(request: Request):
     if not settings.DEBUG or settings.ENVIRONMENT == 'production':
-        client_ip = (
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
-            request.headers.get("x-real-ip", "") or
-            request.client.host if request.client else "127.0.0.1"
-        )
+        client_ip = get_client_ip(request)
         return client_ip
     else:
         return get_remote_address(request)
@@ -48,8 +42,8 @@ def setup_middleware(app: FastAPI):
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
         start_time = time.time()
-
         client_ip = get_client_ip(request)
+
         if await is_ip_blocked(client_ip):
             return create_blocked_response(client_ip)
 
@@ -73,6 +67,19 @@ def setup_middleware(app: FastAPI):
         return response
 
     @app.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        response = await call_next(request)
+
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+        response.headers.pop("server", None)
+
+        return response
+
+    @app.middleware("http")
     async def advanced_rate_limiting(request: Request, call_next):
         if request.url.path in ["/health", "/api/stats"]:
             return await call_next(request)
@@ -92,62 +99,60 @@ def setup_middleware(app: FastAPI):
         except:
             pass
 
-        identifier = advanced_limiter.get_identifier(request, user_id)
+        client_ip = get_client_ip(request)
+        identifier = f"user:{user_id}" if user_id else f"ip:{client_ip}"
+
+        rate_check = {"allowed": True, "remaining": 100, "reset_time": time.time() + 60}
 
         if request.url.path.startswith("/api/auth/login"):
-            rate_check = await advanced_limiter.check_rate_limit(
+            rate_check = advanced_limiter.check_and_record_attempt(
                 f"login:{identifier}",
-                limit=5,
-                window=300,
-                burst_limit=3
+                max_attempts=5,
+                window_seconds=300,
+                lockout_seconds=1800
+            )
+        elif request.url.path.startswith("/api/auth/register"):
+            rate_check = advanced_limiter.check_and_record_attempt(
+                f"register:{identifier}",
+                max_attempts=3,
+                window_seconds=3600,
+                lockout_seconds=3600
             )
         elif request.url.path.startswith("/api/auth/"):
-            rate_check = await advanced_limiter.check_rate_limit(
+            rate_check = advanced_limiter.check_and_record_attempt(
                 f"auth:{identifier}",
-                limit=10,
-                window=300,
-                burst_limit=5
-            )
-        elif request.method in ["POST", "PUT", "DELETE"]:
-            rate_check = await advanced_limiter.check_rate_limit(
-                f"write:{identifier}",
-                limit=100,
-                window=60,
-                burst_limit=20
-            )
-        else:
-            rate_check = await advanced_limiter.check_rate_limit(
-                f"read:{identifier}",
-                limit=200,
-                window=60
+                max_attempts=20,
+                window_seconds=3600
             )
 
         if not rate_check['allowed']:
-            await log_rate_limit_exceeded(request, rate_check, user_id)
+            SecurityLogger.log_rate_limit_exceeded(
+                request,
+                "middleware_rate_limit",
+                user_id=user_id,
+                details=rate_check
+            )
 
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail={
                     "error": "Rate limit exceeded",
-                    "reason": rate_check['reason'],
-                    "retry_after": int(rate_check['reset_time'] - time.time())
+                    "reason": rate_check.get('reason', 'too_many_requests'),
+                    "retry_after": rate_check.get('retry_after', 60)
                 },
                 headers={
-                    "Retry-After": str(int(rate_check['reset_time'] - time.time())),
-                    "X-RateLimit-Remaining": str(rate_check['remaining']),
-                    "X-RateLimit-Reset": str(int(rate_check['reset_time']))
+                    "Retry-After": str(rate_check.get('retry_after', 60)),
+                    "X-RateLimit-Remaining": str(rate_check.get('remaining', 0))
                 }
             )
 
         response = await call_next(request)
-        response.headers["X-RateLimit-Remaining"] = str(rate_check['remaining'])
-        response.headers["X-RateLimit-Reset"] = str(int(rate_check['reset_time']))
+        response.headers["X-RateLimit-Remaining"] = str(rate_check.get('remaining', 100))
 
         return response
 
     @app.middleware("http")
     async def suspicious_request_detector(request: Request, call_next):
-
         suspicious_indicators = []
 
         user_agent = request.headers.get("user-agent", "")
@@ -172,11 +177,10 @@ def setup_middleware(app: FastAPI):
                 suspicious_indicators.append(f"sql_injection_attempt_{pattern}")
 
         if suspicious_indicators:
-            await log_security_middleware_event(
+            SecurityLogger.log_suspicious_activity(
                 request,
-                "suspicious_request",
-                {
-                    "action": "suspicious_request_detected",
+                "suspicious_request_detected",
+                details={
                     "indicators": suspicious_indicators,
                     "user_agent": user_agent,
                     "url_path": url_path,
@@ -201,21 +205,9 @@ def setup_middleware(app: FastAPI):
         response = await call_next(request)
         return response
 
-def get_client_ip(request: Request) -> str:
-    return (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
-        request.headers.get("x-real-ip", "") or
-        request.client.host if request.client else "unknown"
-    )
-
 async def is_ip_blocked(ip_address: str) -> bool:
-    try:
-        block_key = f"blocked_ip:{ip_address}"
-        blocked_data = redis_client.get(block_key)
-        return blocked_data is not None
-    except Exception as e:
-        logging.error(f"Failed to check IP block status for {ip_address}: {e}")
-        return False
+    blocked_ips = ["192.168.1.100"]
+    return ip_address in blocked_ips
 
 def create_blocked_response(ip_address: str) -> JSONResponse:
     return JSONResponse(
@@ -231,57 +223,3 @@ def create_blocked_response(ip_address: str) -> JSONResponse:
             "X-Block-Type": "ip_address"
         }
     )
-
-async def log_rate_limit_exceeded(request: Request, rate_check: Dict[str, Any], user_id: Optional[int] = None):
-    try:
-        from ..services.security_service import SecurityService, SecurityEventType, SecurityLevel
-        from ..database import get_db
-
-        async for db in get_db():
-            security_service = SecurityService(db)
-
-            await security_service.log_security_event(
-                SecurityEventType.SUSPICIOUS_ACTIVITY,
-                SecurityLevel.MEDIUM,
-                request,
-                user_id=user_id,
-                details={
-                    "action": "rate_limit_exceeded",
-                    "endpoint": str(request.url.path),
-                    "method": request.method,
-                    "rate_limit_reason": rate_check.get('reason', 'unknown'),
-                    "remaining_requests": rate_check.get('remaining', 0),
-                    "reset_time": rate_check.get('reset_time', 0)
-                }
-            )
-            break
-
-    except Exception as e:
-        logging.error(f"Failed to log rate limit exceeded event: {e}")
-
-async def log_security_middleware_event(request: Request, event_type: str, details: Dict[str, Any]):
-    try:
-        from ..services.security_service import SecurityService, SecurityEventType, SecurityLevel
-        from ..database import get_db
-
-        event_type_mapping = {
-            "ip_blocked": SecurityEventType.ACCOUNT_LOCKED,
-            "suspicious_request": SecurityEventType.SUSPICIOUS_ACTIVITY,
-            "slow_request": SecurityEventType.SUSPICIOUS_ACTIVITY
-        }
-
-        security_event_type = event_type_mapping.get(event_type, SecurityEventType.SUSPICIOUS_ACTIVITY)
-
-        async for db in get_db():
-            security_service = SecurityService(db)
-
-            await security_service.log_security_event(
-                security_event_type,
-                SecurityLevel.MEDIUM,
-                request,
-                details=details
-            )
-            break
-
-    except Exception as e:
-        logging.error(f"Failed to log security middleware event: {e}")

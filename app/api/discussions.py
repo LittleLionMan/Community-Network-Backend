@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, update
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 
@@ -12,7 +12,8 @@ from app.schemas.forum import (
     ForumPostCreate, ForumPostRead, ForumPostUpdate
 )
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user, get_moderation_service
+from app.core.dependencies import get_current_user, get_current_admin_user, get_moderation_service
+from app.core.rate_limit_decorator import forum_post_rate_limit, forum_reply_rate_limit, read_rate_limit
 from app.services.moderation_service import ModerationService
 
 router = APIRouter()
@@ -23,7 +24,9 @@ router = APIRouter()
     summary="Get all forum threads",
     description="Public endpoint to retrieve all threads with pagination"
 )
+@read_rate_limit("forum_listing")
 async def get_threads(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     category_id: Optional[int] = Query(None, description="Filter by category"),
@@ -137,7 +140,9 @@ async def get_thread(
         404: {"model": ErrorResponse, "description": "Category not found"}
     }
 )
+@forum_post_rate_limit
 async def create_thread(
+    request:Request,
     thread_data: ForumThreadCreate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
@@ -329,7 +334,9 @@ async def get_thread_posts(
         404: {"model": ErrorResponse, "description": "Thread not found"}
     }
 )
+@forum_reply_rate_limit
 async def create_post(
+    request: Request,
     thread_id: int,
     post_data: ForumPostCreate,
     background_tasks: BackgroundTasks,
