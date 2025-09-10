@@ -27,7 +27,8 @@ class PrivacyService:
     async def _filter_public_user_data(user: User) -> UserPublic:
         user_data = {
             "id": user.id,
-            "display_name": user.display_name
+            "display_name": user.display_name,
+            "profile_image_url": user.profile_image_url
         }
 
         if not user.first_name_private and user.first_name:
@@ -44,6 +45,8 @@ class PrivacyService:
 
         if not user.created_at_private:
             user_data["created_at"] = user.created_at
+
+        user_data["created_at"] = user.created_at
 
         return UserPublic(**user_data)
 

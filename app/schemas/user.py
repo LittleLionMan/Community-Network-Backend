@@ -59,6 +59,22 @@ class UserPublic(BaseModel):
 
     model_config = ConfigDict(from_attributes = True)
 
+class UserAdmin(BaseModel):
+    id: int
+    display_name: str
+    email: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    bio: Optional[str] = None
+    location: Optional[str] = None
+    is_active: bool
+    is_admin: bool
+    created_at: datetime
+    email_verified: bool
+    email_verified_at: Optional[datetime] = None
+    profile_image_url: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
 class UserPrivate(BaseModel):
     id: int
     display_name: str

@@ -6,10 +6,10 @@ from pathlib import Path
 
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate
+from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate, UserAdmin
 from app.services.privacy import PrivacyService
 from app.services.file_service import FileUploadService
-from app.core.dependencies import get_current_active_user, get_optional_current_user
+from app.core.dependencies import get_current_active_user, get_optional_current_user, get_current_admin_user
 from app.core.rate_limit_decorator import read_rate_limit
 from app.core.auth import get_password_hash
 
@@ -49,6 +49,41 @@ async def create_user(
     await db.refresh(db_user)
 
     return UserPrivate.model_validate(db_user)
+
+@router.get("/admin-list", response_model=List[UserAdmin])
+async def list_users_admin(
+    request: Request,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    is_admin: Optional[bool] = None,
+    email_verified: Optional[bool] = None,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(get_current_admin_user)
+):
+    query = select(User)
+
+    if search:
+        query = query.where(
+            User.display_name.ilike(f"%{search}%") |
+            User.first_name.ilike(f"%{search}%") |
+            User.last_name.ilike(f"%{search}%") |
+            User.email.ilike(f"%{search}%")
+        )
+
+    if is_active is not None:
+        query = query.where(User.is_active == is_active)
+    if is_admin is not None:
+        query = query.where(User.is_admin == is_admin)
+    if email_verified is not None:
+        query = query.where(User.email_verified == email_verified)
+
+    query = query.offset(skip).limit(limit)
+    result = await db.execute(query)
+    users = result.scalars().all()
+
+    return users
 
 @router.get("/{user_id}", response_model=UserPublic | UserPrivate)
 @read_rate_limit("user_profile")
@@ -117,7 +152,6 @@ async def upload_profile_image(
     try:
         file_path, public_url = await file_service.upload_profile_image(profile_image, current_user.id)
 
-        # ✅ Delete old image if exists
         if current_user.profile_image_url:
             await file_service.delete_profile_image(current_user.profile_image_url)
 

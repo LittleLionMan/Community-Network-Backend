@@ -43,7 +43,7 @@ class SecurityLogger:
         additional_data: Optional[Dict[str, Any]] = None
     ):
         log_data = {
-            "event": "login_attempt",
+            "event_type": "login_attempt",
             "email": email,
             "success": success,
             "ip_address": get_client_ip(request),
@@ -72,7 +72,7 @@ class SecurityLogger:
         failure_reason: Optional[str] = None
     ):
         log_data = {
-            "event": "user_registration",
+            "event_type": "user_registration",
             "email": email,
             "success": success,
             "ip_address": get_client_ip(request),
@@ -99,7 +99,7 @@ class SecurityLogger:
         additional_data: Optional[Dict[str, Any]] = None
     ):
         log_data = {
-            "event": "password_reset",
+            "event_type": "password_reset",
             "step": step,
             "email": email,
             "ip_address": get_client_ip(request),
@@ -127,7 +127,7 @@ class SecurityLogger:
         additional_data: Optional[Dict[str, Any]] = None
     ):
         log_data = {
-            "event": "email_change",
+            "event_type": "email_change",
             "step": step,
             "user_id": user_id,
             "old_email": old_email,
@@ -151,7 +151,7 @@ class SecurityLogger:
         details: Optional[Dict[str, Any]] = None
     ):
         log_data = {
-            "event": "suspicious_activity",
+            "event_type": "suspicious_activity",
             "activity_type": activity_type,
             "ip_address": get_client_ip(request),
             "user_agent": get_user_agent(request),
@@ -176,7 +176,7 @@ class SecurityLogger:
         details: Optional[Dict[str, Any]] = None
     ):
         log_data = {
-            "event": "admin_action",
+            "event_type": "admin_action",
             "admin_user_id": admin_user_id,
             "action": action,
             "ip_address": get_client_ip(request),
@@ -199,7 +199,7 @@ class SecurityLogger:
         details: Optional[Dict[str, Any]] = None
     ):
         log_data = {
-            "event": "rate_limit_exceeded",
+            "event_type": "rate_limit_exceeded",
             "limit_type": limit_type,
             "ip_address": get_client_ip(request),
             "user_agent": get_user_agent(request),
