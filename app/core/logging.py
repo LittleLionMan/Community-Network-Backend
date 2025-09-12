@@ -12,7 +12,6 @@ def get_client_ip(request) -> str:
     )
 
 def get_user_agent(request) -> str:
-    """Extract user agent from request"""
     return request.headers.get("user-agent", "unknown")
 
 structlog.configure(

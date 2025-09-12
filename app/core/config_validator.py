@@ -1,7 +1,6 @@
 import os
 import sys
 from typing import Dict, Any
-from urllib.parse import urlparse
 from pathlib import Path
 import json
 
@@ -124,6 +123,22 @@ class EnvironmentValidator:
 
     @classmethod
     def validate_or_exit(cls) -> None:
+        skip_validation = (
+            os.getenv('SKIP_CONFIG_VALIDATION', '').lower() == 'true' or
+            'alembic' in sys.argv[0] or
+            any('alembic' in arg for arg in sys.argv)
+        )
+
+        if skip_validation:
+            print("🔧 Skipping configuration validation for migration tool")
+            return
+
+        result = cls.validate_environment()
+
+        print("🔧 Environment Configuration Validation")
+        print("=" * 50)
+        print(f"Environment: {result['environment'].upper()}")
+
         result = cls.validate_environment()
 
         print("🔧 Environment Configuration Validation")

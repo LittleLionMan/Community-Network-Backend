@@ -15,8 +15,8 @@ class EventCategory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationships
     events: Mapped[List["Event"]] = relationship("Event", back_populates="category")
 
 class Event(Base):
@@ -32,11 +32,9 @@ class Event(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Foreign Keys
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     category_id: Mapped[int] = mapped_column(ForeignKey("event_categories.id"))
 
-    # Relationships
     creator: Mapped["User"] = relationship("User", back_populates="events")
     category: Mapped["EventCategory"] = relationship("EventCategory", back_populates="events")
     participations: Mapped[List["EventParticipation"]] = relationship("EventParticipation", back_populates="event")

@@ -12,7 +12,7 @@ from app.schemas.event import (
 )
 from app.schemas.common import ErrorResponse
 from app.core.dependencies import get_current_user, get_current_admin_user, get_optional_current_user
-from app.core.rate_limit_decorator import event_create_rate_limit, comment_rate_limit, read_rate_limit
+from app.core.rate_limit_decorator import event_create_rate_limit, read_rate_limit
 from app.models.enums import ParticipationStatus
 from app.services.event_service import EventService
 
@@ -55,7 +55,7 @@ async def get_events(
 
     event_summaries = []
     for event in events:
-        event_dict = EventSummary.model_validate(event).model_dump()
+        event_dict = EventSummary.model_validate(event, from_attributes=True).model_dump()
         participant_count = len([p for p in event.participations
                                if p.status == ParticipationStatus.REGISTERED])
         event_dict["participant_count"] = participant_count
@@ -95,7 +95,13 @@ async def get_event(
             detail="Event not found"
         )
 
-    event_dict = EventRead.model_validate(event).model_dump()
+    if not event.creator:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Event creator data missing"
+        )
+
+    event_dict = EventRead.model_validate(event, from_attributes=True).model_dump()
     participant_count = len([p for p in event.participations
                            if p.status == ParticipationStatus.REGISTERED])
     event_dict["participant_count"] = participant_count
@@ -140,7 +146,7 @@ async def create_event(
     await db.commit()
     await db.refresh(db_event, ["creator", "category"])
 
-    return EventRead.model_validate(db_event)
+    return EventRead.model_validate(db_event, from_attributes=True)
 
 @router.put(
     "/{event_id}",
@@ -194,7 +200,7 @@ async def update_event(
     await db.commit()
     await db.refresh(event, ["creator", "category"])
 
-    return EventRead.model_validate(event)
+    return EventRead.model_validate(event, from_attributes=True)
 
 @router.delete(
     "/{event_id}",
@@ -280,8 +286,8 @@ async def join_event(
         if existing_participation.status == ParticipationStatus.CANCELLED:
             existing_participation.status = ParticipationStatus.REGISTERED
             await db.commit()
-            await db.refresh(existing_participation, ["user"])
-            return EventParticipationRead.model_validate(existing_participation)
+            await db.refresh(existing_participation, ["user", "status_updated_at", "registered_at"])
+            return EventParticipationRead.model_validate(existing_participation, from_attributes=True)
 
     participation = EventParticipation(
         event_id=event_id,
@@ -291,9 +297,9 @@ async def join_event(
 
     db.add(participation)
     await db.commit()
-    await db.refresh(participation, ["user"])
+    await db.refresh(participation, ["user", "status_updated_at", "registered_at"])
 
-    return EventParticipationRead.model_validate(participation)
+    return EventParticipationRead.model_validate(participation, from_attributes=True)
 
 @router.delete(
     "/{event_id}/join",
@@ -358,7 +364,7 @@ async def get_event_participants(
     )
     participations = result.scalars().all()
 
-    return [EventParticipationRead.model_validate(p) for p in participations]
+    return [EventParticipationRead.model_validate(p, from_attributes=True) for p in participations]
 
 @router.get(
     "/my/created",
@@ -384,7 +390,7 @@ async def get_my_created_events(
     )
     events = result.scalars().all()
 
-    return [EventSummary.model_validate(event) for event in events]
+    return [EventSummary.model_validate(event, from_attributes=True) for event in events]
 
 @router.get(
     "/my/joined",
@@ -411,7 +417,7 @@ async def get_my_joined_events(
     )
     participations = result.scalars().all()
 
-    return [EventParticipationRead.model_validate(p) for p in participations]
+    return [EventParticipationRead.model_validate(p, from_attributes=True) for p in participations]
 
 @router.get(
     "/my/stats",

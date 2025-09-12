@@ -112,7 +112,17 @@ class ContentRateLimiter:
         if is_trusted:
             return UserTier.TRUSTED
 
-        account_age = datetime.now(timezone.utc) - user_created_at
+        now = datetime.now(timezone.utc)
+
+        if hasattr(user_created_at, 'tzinfo') and user_created_at.tzinfo is None:
+            user_created_at = user_created_at.replace(tzinfo=timezone.utc)
+        elif not hasattr(user_created_at, 'tzinfo'):
+            return UserTier.NEW
+
+        try:
+            account_age = now - user_created_at
+        except TypeError:
+            return UserTier.NEW
 
         if account_age < timedelta(days=7):
             return UserTier.NEW

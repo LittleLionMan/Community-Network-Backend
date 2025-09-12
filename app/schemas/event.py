@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import Optional, List
-from datetime import datetime
+from pydantic import BaseModel, Field, field_validator, ConfigDict, model_validator
+from typing import Optional, Self
+from datetime import datetime, timezone
 from .user import UserSummary
 from ..models.enums import ParticipationStatus
 
@@ -27,16 +27,32 @@ class EventCreate(BaseModel):
     @field_validator('start_datetime')
     @classmethod
     def validate_start_datetime(cls, v):
-        if v <= datetime.now():
+        now = datetime.now(timezone.utc)
+
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+
+        if v <= now:
             raise ValueError('Start datetime must be in the future')
         return v
 
-    @field_validator('end_datetime')
-    @classmethod
-    def validate_end_datetime(cls, v, values):
-        if v and 'start_datetime' in values and v <= values['start_datetime']:
+    @model_validator(mode='after')
+    def validate_end_after_start(self) -> Self:
+        if self.end_datetime is None:
+            return self
+
+        start = self.start_datetime
+        end = self.end_datetime
+
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+
+        if end <= start:
             raise ValueError('End datetime must be after start datetime')
-        return v
+
+        return self
 
 class EventUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -69,7 +85,7 @@ class EventRead(BaseModel):
     max_participants: Optional[int] = None
     is_active: bool
     created_at: datetime
-    creator_id: int
+    creator: UserSummary
     category_id: int
     participant_count: int = 0
     is_full: bool = False
