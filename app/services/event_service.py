@@ -97,7 +97,7 @@ class EventService:
                 "utilization_percentage": round((current_count / event.max_participants) * 100, 1)
             }
 
-        except Exception as e:
+        except Exception:
             return {
                 "has_capacity_limit": True,
                 "max_participants": event.max_participants,

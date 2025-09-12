@@ -86,7 +86,7 @@ class EventRead(BaseModel):
     is_active: bool
     created_at: datetime
     creator: UserSummary
-    category_id: int
+    category: EventCategoryRead
     participant_count: int = 0
     is_full: bool = False
 
