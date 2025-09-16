@@ -1,18 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_, func, desc
 from sqlalchemy.orm import selectinload
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
+from datetime import datetime, timedelta
 import json
 
 from app.database import get_db
 from app.models.service import Service
 from app.models.user import User
+from app.models.business import ModerationAction
 from app.schemas.service import (
     ServiceCreate, ServiceRead, ServiceUpdate, ServiceSummary
 )
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_optional_current_user
+from app.core.dependencies import get_current_user, get_optional_current_user, get_current_admin_user
 from app.core.rate_limit_decorator import service_create_rate_limit, read_rate_limit
 from app.services.matching_service import ServiceMatchingService
 from app.services.file_service import FileUploadService
@@ -58,6 +60,176 @@ async def get_services(
     services = result.scalars().all()
 
     return [ServiceSummary.model_validate(service) for service in services]
+
+@router.get(
+    "/admin",
+    response_model=Dict[str, Any],
+    summary="Get all services for admin management"
+)
+async def get_admin_services(
+    request: Request,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    is_offering: Optional[bool] = Query(None),
+    is_active: Optional[bool] = Query(None),
+    is_completed: Optional[bool] = Query(None),
+    has_image: Optional[bool] = Query(None),
+    flagged_only: bool = Query(False),
+    sort_by: str = Query("created_at", regex="^(created_at|updated_at|view_count|interest_count|title)$"),
+    sort_order: str = Query("desc", regex="^(asc|desc)$"),
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    query = select(Service).options(selectinload(Service.user))
+
+    conditions = []
+
+    if search:
+        search_term = f"%{search}%"
+        conditions.append(
+            or_(
+                Service.title.ilike(search_term),
+                Service.description.ilike(search_term)
+            )
+        )
+
+    if is_offering is not None:
+        conditions.append(Service.is_offering == is_offering)
+
+    if is_active is not None:
+        conditions.append(Service.is_active == is_active)
+
+    if is_completed is not None:
+        conditions.append(Service.is_completed == is_completed)
+
+    if has_image is not None:
+        if has_image:
+            conditions.append(Service.service_image_url.isnot(None))
+        else:
+            conditions.append(Service.service_image_url.is_(None))
+
+    if flagged_only:
+        # TODO: Join with moderation actions or flagged content
+        pass
+
+    if conditions:
+        query = query.where(and_(*conditions))
+
+    sort_column = getattr(Service, sort_by)
+    if sort_order == "desc":
+        query = query.order_by(desc(sort_column))
+    else:
+        query = query.order_by(sort_column)
+
+    count_query = select(func.count()).select_from(
+        query.subquery()
+    )
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    offset = (page - 1) * size
+    query = query.offset(offset).limit(size)
+
+    result = await db.execute(query)
+    services = result.scalars().all()
+
+    return {
+        "services": [ServiceRead.model_validate(service) for service in services],
+        "total": total,
+        "page": page,
+        "size": size,
+        "total_pages": (total + size - 1) // size,
+        "has_next": page * size < total,
+        "has_prev": page > 1
+    }
+
+@router.get(
+    "/my/",
+    response_model=List[ServiceSummary],
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication required"}
+    }
+)
+async def get_my_services(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    is_offering: Optional[bool] = Query(None, description="Filter by offering/seeking"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    query = select(Service).where(
+        Service.user_id == current_user.id,
+        Service.is_active == True
+    )
+
+    if is_offering is not None:
+        query = query.where(Service.is_offering == is_offering)
+
+    query = query.options(selectinload(Service.user)).order_by(
+        Service.created_at.desc()
+    ).offset(skip).limit(limit)
+
+    result = await db.execute(query)
+    services = result.scalars().all()
+
+    return [ServiceSummary.model_validate(service) for service in services]
+
+@router.get("/stats")
+async def get_service_stats(
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    result = await db.execute(
+        select(Service).where(Service.is_active == True)
+    )
+    services = result.scalars().all()
+
+    total_services = len(services)
+    offerings = len([s for s in services if s.is_offering])
+    seekings = len([s for s in services if not s.is_offering])
+
+    stats = {
+        "total_active_services": total_services,
+        "services_offered": offerings,
+        "services_requested": seekings,
+        "market_balance": offerings / max(1, seekings) if seekings > 0 else float('inf')
+    }
+
+    if current_user:
+        user_services = [s for s in services if s.user_id == current_user.id]
+        user_offerings = len([s for s in user_services if s.is_offering])
+        user_requests = len([s for s in user_services if not s.is_offering])
+
+        stats["user_stats"] = {
+            "my_services": len(user_services),
+            "my_offerings": user_offerings,
+            "my_requests": user_requests
+        }
+
+    return stats
+
+@router.get(
+    "/recommendations",
+    response_model=List[ServiceSummary],
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication required"}
+    }
+)
+async def get_service_recommendations(
+    limit: int = Query(10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+
+    matching_service = ServiceMatchingService(db)
+    recommendations = await matching_service.find_matching_services(
+        user_id=current_user.id,
+        limit=limit
+    )
+
+    return [ServiceSummary.model_validate(service) for service in recommendations]
 
 @router.get(
     "/{service_id}",
@@ -201,93 +373,6 @@ async def delete_service(
     service.is_active = False
     await db.commit()
 
-@router.get(
-    "/my/",
-    response_model=List[ServiceSummary],
-    responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"}
-    }
-)
-async def get_my_services(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    is_offering: Optional[bool] = Query(None, description="Filter by offering/seeking"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    query = select(Service).where(
-        Service.user_id == current_user.id,
-        Service.is_active == True
-    )
-
-    if is_offering is not None:
-        query = query.where(Service.is_offering == is_offering)
-
-    query = query.options(selectinload(Service.user)).order_by(
-        Service.created_at.desc()
-    ).offset(skip).limit(limit)
-
-    result = await db.execute(query)
-    services = result.scalars().all()
-
-    return [ServiceSummary.model_validate(service) for service in services]
-
-@router.get("/stats")
-async def get_service_stats(
-    current_user: Optional[User] = Depends(get_optional_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-
-    result = await db.execute(
-        select(Service).where(Service.is_active == True)
-    )
-    services = result.scalars().all()
-
-    total_services = len(services)
-    offerings = len([s for s in services if s.is_offering])
-    seekings = len([s for s in services if not s.is_offering])
-
-    stats = {
-        "total_active_services": total_services,
-        "services_offered": offerings,
-        "services_requested": seekings,
-        "market_balance": offerings / max(1, seekings) if seekings > 0 else float('inf')
-    }
-
-    if current_user:
-        user_services = [s for s in services if s.user_id == current_user.id]
-        user_offerings = len([s for s in user_services if s.is_offering])
-        user_requests = len([s for s in user_services if not s.is_offering])
-
-        stats["user_stats"] = {
-            "my_services": len(user_services),
-            "my_offerings": user_offerings,
-            "my_requests": user_requests
-        }
-
-    return stats
-
-@router.get(
-    "/recommendations",
-    response_model=List[ServiceSummary],
-    responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"}
-    }
-)
-async def get_service_recommendations(
-    limit: int = Query(10, ge=1, le=50),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-
-    matching_service = ServiceMatchingService(db)
-    recommendations = await matching_service.find_matching_services(
-        user_id=current_user.id,
-        limit=limit
-    )
-
-    return [ServiceSummary.model_validate(service) for service in recommendations]
-
 @router.post(
     "/{service_id}/interest",
     status_code=status.HTTP_200_OK,
@@ -364,7 +449,6 @@ async def create_service_with_image(
                 detail="Invalid meeting_locations format. Must be JSON array."
             )
 
-    # Handle image upload
     service_image_url = None
     if service_image:
         file_service = FileUploadService()
@@ -421,7 +505,7 @@ async def update_service_with_image(
     is_offering: Optional[bool] = Form(None),
     is_active: Optional[bool] = Form(None),
     service_image: Optional[UploadFile] = File(None),
-    meeting_locations: Optional[str] = Form(None),  # JSON string
+    meeting_locations: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -470,7 +554,6 @@ async def update_service_with_image(
                 detail="Failed to upload image"
             )
 
-    # Update other fields
     if title is not None:
         service.title = title.strip()
     if description is not None:
@@ -573,8 +656,6 @@ async def express_interest_with_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Express interest and create a conversation with the service provider"""
-
     service = await db.get(Service, service_id)
     if not service:
         raise HTTPException(
@@ -588,10 +669,6 @@ async def express_interest_with_message(
             detail="Cannot express interest in your own service"
         )
 
-    # Create conversation and send message (integrate with message system)
-    # This would use the existing message API to create a conversation
-
-    # For now, we'll use the existing interest system
     matching_service = ServiceMatchingService(db)
     success = await matching_service.create_service_request(
         user_id=current_user.id,
@@ -610,15 +687,11 @@ async def express_interest_with_message(
             detail="Failed to express interest"
         )
 
-# Enhanced stats endpoint with more details
 @router.get("/stats/detailed")
 async def get_detailed_service_stats(
     current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get detailed platform service statistics"""
-
-    # Basic platform stats
     result = await db.execute(
         select(Service).where(Service.is_active == True)
     )
@@ -628,10 +701,8 @@ async def get_detailed_service_stats(
     offerings = len([s for s in services if s.is_offering])
     seekings = len([s for s in services if not s.is_offering])
 
-    # Services with images
     services_with_images = len([s for s in services if s.service_image_url])
 
-    # Services with meeting locations
     services_with_locations = len([s for s in services if s.meeting_locations])
 
     stats = {
@@ -659,3 +730,308 @@ async def get_detailed_service_stats(
         }
 
     return stats
+
+@router.get(
+    "/admin/stats",
+    summary="Get service statistics for admin dashboard"
+)
+async def get_admin_service_stats(
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    total_services_result = await db.execute(select(func.count(Service.id)))
+    total_services = total_services_result.scalar() or 0
+
+    active_services_result = await db.execute(
+        select(func.count(Service.id)).where(Service.is_active == True)
+    )
+    active_services = active_services_result.scalar() or 0
+
+    completed_services_result = await db.execute(
+        select(func.count(Service.id)).where(Service.is_completed == True)
+    )
+    completed_services = completed_services_result.scalar() or 0
+
+    offerings_result = await db.execute(
+        select(func.count(Service.id)).where(
+            and_(Service.is_active == True, Service.is_offering == True)
+        )
+    )
+    active_offerings = offerings_result.scalar() or 0
+
+    requests_result = await db.execute(
+        select(func.count(Service.id)).where(
+            and_(Service.is_active == True, Service.is_offering == False)
+        )
+    )
+    active_requests = requests_result.scalar() or 0
+
+    with_images_result = await db.execute(
+        select(func.count(Service.id)).where(
+            and_(Service.is_active == True, Service.service_image_url.isnot(None))
+        )
+    )
+    with_images = with_images_result.scalar() or 0
+
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    recent_services_result = await db.execute(
+        select(func.count(Service.id)).where(Service.created_at >= week_ago)
+    )
+    recent_services = recent_services_result.scalar() or 0
+
+    top_viewed_result = await db.execute(
+        select(Service).options(selectinload(Service.user))
+        .where(Service.is_active == True)
+        .order_by(desc(Service.view_count))
+        .limit(5)
+    )
+    top_viewed = [ServiceSummary.model_validate(s) for s in top_viewed_result.scalars().all()]
+
+    top_interest_result = await db.execute(
+        select(Service).options(selectinload(Service.user))
+        .where(Service.is_active == True)
+        .order_by(desc(Service.interest_count))
+        .limit(5)
+    )
+    top_interest = [ServiceSummary.model_validate(s) for s in top_interest_result.scalars().all()]
+
+    return {
+        "overview": {
+            "total_services": total_services,
+            "active_services": active_services,
+            "completed_services": completed_services,
+            "active_offerings": active_offerings,
+            "active_requests": active_requests,
+            "completion_rate": (completed_services / max(1, total_services)) * 100,
+            "services_with_images": with_images,
+            "image_usage_rate": (with_images / max(1, active_services)) * 100
+        },
+        "recent_activity": {
+            "new_services_7d": recent_services,
+            "growth_rate": (recent_services / max(1, total_services)) * 100
+        },
+        "top_performing": {
+            "most_viewed": top_viewed,
+            "most_interest": top_interest
+        }
+    }
+
+@router.post(
+    "/admin/{service_id}/moderate",
+    summary="Moderate a service"
+)
+async def moderate_service(
+    service_id: int,
+    action: str,
+    reason: Optional[str] = None,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if action not in ['approve', 'flag', 'disable', 'enable']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid action. Must be: approve, flag, disable, enable"
+        )
+
+    service = await db.get(Service, service_id)
+    if not service:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Service not found"
+        )
+
+    if action == 'disable':
+        service.is_active = False
+    elif action == 'enable':
+        service.is_active = True
+    moderation_action = ModerationAction(
+        action_type=action,
+        reason=reason,
+        confidence_score=1.0,
+        automated=False,
+        moderator_id=current_user.id,
+        content_type='service',
+        content_id=service_id
+    )
+    db.add(moderation_action)
+
+    await db.commit()
+
+    return {
+        "message": f"Service {action}d successfully",
+        "service_id": service_id,
+        "action": action,
+        "moderator": current_user.display_name
+    }
+
+@router.post(
+    "/admin/bulk-moderate",
+    summary="Bulk moderate services"
+)
+async def bulk_moderate_services(
+    service_ids: List[int],
+    action: str,
+    reason: Optional[str] = None,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if action not in ['approve', 'flag', 'disable', 'enable', 'delete']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid action"
+        )
+
+    if len(service_ids) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot moderate more than 50 services at once"
+        )
+
+    result = await db.execute(
+        select(Service).where(Service.id.in_(service_ids))
+    )
+    services = result.scalars().all()
+
+    if len(services) != len(service_ids):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Some services not found"
+        )
+
+    successful = 0
+    failed = 0
+
+    for service in services:
+        try:
+            if action == 'disable':
+                service.is_active = False
+            elif action == 'enable':
+                service.is_active = True
+            elif action == 'delete':
+                service.is_active = False
+            moderation_action = ModerationAction(
+                action_type=action,
+                reason=reason,
+                confidence_score=1.0,
+                automated=False,
+                moderator_id=current_user.id,
+                content_type='service',
+                content_id=service.id
+            )
+            db.add(moderation_action)
+            successful += 1
+
+        except Exception as e:
+            print(f"Failed to moderate service {service.id}: {e}")
+            failed += 1
+
+    await db.commit()
+
+    return {
+        "message": f"Bulk moderation completed",
+        "successful": successful,
+        "failed": failed,
+        "action": action,
+        "moderator": current_user.display_name
+    }
+
+@router.get(
+    "/admin/{service_id}",
+    response_model=ServiceRead,
+    summary="Get service details for admin"
+)
+async def get_admin_service_detail(
+    service_id: int,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Service).options(selectinload(Service.user))
+        .where(Service.id == service_id)
+    )
+    service = result.scalar_one_or_none()
+
+    if not service:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Service not found"
+        )
+
+    # Get moderation history
+    moderation_result = await db.execute(
+        select(ModerationAction)
+        .where(
+            and_(
+                ModerationAction.content_type == 'service',
+                ModerationAction.content_id == service_id
+            )
+        )
+        .order_by(desc(ModerationAction.created_at))
+        .limit(10)
+    )
+    moderation_history = moderation_result.scalars().all()
+
+    service_data = ServiceRead.model_validate(service)
+
+    return {
+        **service_data.model_dump(),
+        "admin_info": {
+            "moderation_history": [
+                {
+                    "action": action.action_type,
+                    "reason": action.reason,
+                    "moderator_id": action.moderator_id,
+                    "created_at": action.created_at,
+                    "automated": action.automated
+                } for action in moderation_history
+            ]
+        }
+    }
+
+@router.get(
+    "/admin/user/{user_id}",
+    summary="Get services by user for admin review"
+)
+async def get_user_services_admin(
+    user_id: int,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    target_user = await db.get(User, user_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    result = await db.execute(
+        select(Service).options(selectinload(Service.user))
+        .where(Service.user_id == user_id)
+        .order_by(desc(Service.created_at))
+    )
+    services = result.scalars().all()
+
+    active_count = len([s for s in services if s.is_active])
+    completed_count = len([s for s in services if s.is_completed])
+    total_views = sum(s.view_count for s in services)
+    total_interests = sum(s.interest_count for s in services)
+
+    return {
+        "user": {
+            "id": target_user.id,
+            "display_name": target_user.display_name,
+            "email": target_user.email,
+            "created_at": target_user.created_at,
+            "is_active": target_user.is_active
+        },
+        "services": [ServiceRead.model_validate(service) for service in services],
+        "stats": {
+            "total_services": len(services),
+            "active_services": active_count,
+            "completed_services": completed_count,
+            "total_views": total_views,
+            "total_interests": total_interests,
+            "average_views": total_views / max(1, len(services)),
+            "completion_rate": (completed_count / max(1, len(services))) * 100
+        }
+    }

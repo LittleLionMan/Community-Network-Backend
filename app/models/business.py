@@ -7,7 +7,6 @@ from .base import Base
 if TYPE_CHECKING:
     from .user import User
     from .service import Service
-    from .message import Conversation
 
 
 class ServiceInterest(Base):
@@ -16,7 +15,6 @@ class ServiceInterest(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     message: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
     status: Mapped[str] = mapped_column(String(50), default='pending')
     response_message: Mapped[Optional[str]] = mapped_column(Text)
     responded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -34,10 +32,6 @@ class ServiceInterest(Base):
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"))
     conversation_id: Mapped[Optional[int]] = mapped_column(ForeignKey("conversations.id"))
 
-    user: Mapped["User"] = relationship("User")
-    service: Mapped["Service"] = relationship("Service", back_populates="interests")
-    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation")
-
 class ServiceTag(Base):
     __tablename__ = "service_tags"
 
@@ -54,17 +48,14 @@ class ModerationAction(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     action_type: Mapped[str] = mapped_column(String(50))
     reason: Mapped[Optional[str]] = mapped_column(Text)
-    confidence_score: Mapped[float] = mapped_column(Float)
-    automated: Mapped[bool] = mapped_column(Boolean, default=True)
+    confidence_score: Mapped[float] = mapped_column(default=1.0)
+    automated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    moderator_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
-
 
     content_type: Mapped[str] = mapped_column(String(50))
     content_id: Mapped[int] = mapped_column(Integer)
 
-    moderator: Mapped[Optional["User"]] = relationship("User")
+    moderator_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
 
 
 class ServiceTagAssociation(Base):

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .poll import Poll, Vote
     from .comment import Comment
     from .message import Message, MessageReadReceipt, ConversationParticipant
+    from .business import ServiceInterest, ModerationAction, UserEngagement
 
 class User(Base):
     __tablename__ = "users"
@@ -51,7 +52,7 @@ class User(Base):
 
     events: Mapped[List["Event"]] = relationship("Event", back_populates="creator")
     participations: Mapped[List["EventParticipation"]] = relationship("EventParticipation", back_populates="user")
-    services: Mapped[List["Service"]] = relationship("Service", back_populates="user")
+    services: Mapped[List["Service"]] = relationship("Service", back_populates="user", foreign_keys="Service.user_id")
     forum_threads: Mapped[List["ForumThread"]] = relationship("ForumThread", back_populates="creator")
     forum_posts: Mapped[List["ForumPost"]] = relationship("ForumPost", back_populates="author")
     comments: Mapped[List["Comment"]] = relationship("Comment", back_populates="author")
