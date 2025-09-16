@@ -1,34 +1,58 @@
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Float, Enum as SQLEnum
+from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
-from enum import Enum
 if TYPE_CHECKING:
     from .user import User
     from .service import Service
+    from .message import Conversation
 
 
 class ServiceInterest(Base):
-    """Track when users express interest in services"""
     __tablename__ = "service_interests"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     message: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    status: Mapped[str] = mapped_column(String(50), default='pending')
+    response_message: Mapped[Optional[str]] = mapped_column(Text)
+    responded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    proposed_meeting_location: Mapped[Optional[str]] = mapped_column(String(500))
+    proposed_meeting_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    agreed_meeting_location: Mapped[Optional[str]] = mapped_column(String(500))
+    agreed_meeting_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    completed_by_requester: Mapped[bool] = mapped_column(Boolean, default=False)
+    completed_by_provider: Mapped[bool] = mapped_column(Boolean, default=False)
+    completion_notes: Mapped[Optional[str]] = mapped_column(Text)
+
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"))
+    conversation_id: Mapped[Optional[int]] = mapped_column(ForeignKey("conversations.id"))
 
     user: Mapped["User"] = relationship("User")
-    service: Mapped["Service"] = relationship("Service")
+    service: Mapped["Service"] = relationship("Service", back_populates="interests")
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation")
+
+class ServiceTag(Base):
+    __tablename__ = "service_tags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class ModerationAction(Base):
     __tablename__ = "moderation_actions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    action_type: Mapped[str] = mapped_column(String(50))  # 'flagged', 'approved', 'deleted'
+    action_type: Mapped[str] = mapped_column(String(50))
     reason: Mapped[Optional[str]] = mapped_column(Text)
     confidence_score: Mapped[float] = mapped_column(Float)
     automated: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -41,6 +65,17 @@ class ModerationAction(Base):
     content_id: Mapped[int] = mapped_column(Integer)
 
     moderator: Mapped[Optional["User"]] = relationship("User")
+
+
+class ServiceTagAssociation(Base):
+    __tablename__ = "service_tag_associations"
+
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), primary_key=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("service_tags.id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    service: Mapped["Service"] = relationship("Service")
+    tag: Mapped["ServiceTag"] = relationship("ServiceTag")
 
 class UserEngagement(Base):
     __tablename__ = "user_engagement"
@@ -68,7 +103,6 @@ class DailyStats(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), unique=True)
 
-    # Platform metrics
     active_users: Mapped[int] = mapped_column(Integer, default=0)
     new_users: Mapped[int] = mapped_column(Integer, default=0)
     events_created: Mapped[int] = mapped_column(Integer, default=0)
@@ -76,7 +110,6 @@ class DailyStats(Base):
     comments_posted: Mapped[int] = mapped_column(Integer, default=0)
     polls_created: Mapped[int] = mapped_column(Integer, default=0)
 
-    # Moderation metrics
     content_flagged: Mapped[int] = mapped_column(Integer, default=0)
     content_approved: Mapped[int] = mapped_column(Integer, default=0)
     content_removed: Mapped[int] = mapped_column(Integer, default=0)
