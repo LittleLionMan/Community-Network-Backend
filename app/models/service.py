@@ -1,9 +1,12 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, JSON
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
+if TYPE_CHECKING:
+    from .user import User
+    from .comment import Comment
 
 class Service(Base):
     __tablename__ = "services"
@@ -22,6 +25,7 @@ class Service(Base):
     interest_count: Mapped[int] = mapped_column(Integer, default=0)
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    user: Mapped["User"] = relationship("User", back_populates="services")
 
     price_type: Mapped[Optional[str]] = mapped_column(String(50))
     price_amount: Mapped[Optional[float]] = mapped_column()
@@ -37,3 +41,4 @@ class Service(Base):
     reviewed_by: Mapped[Optional[int]] = mapped_column(Integer)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    comments: Mapped[List["Comment"]] = relationship("Comment", back_populates="service")

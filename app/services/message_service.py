@@ -590,10 +590,7 @@ class MessageService:
             reply_to = MessageResponse(
                 id=message.reply_to.id,
                 conversation_id=message.reply_to.conversation_id,
-                sender=UserSummary(
-                    id=message.reply_to.sender.id,
-                    display_name=message.reply_to.sender.display_name
-                ),
+                sender=UserSummary.model_validate(message.reply_to.sender, from_attributes=True),
                 content=message.reply_to.content[:100] + "..." if len(message.reply_to.content) > 100 else message.reply_to.content,
                 message_type=message.reply_to.message_type,
                 created_at=message.reply_to.created_at,
@@ -607,10 +604,7 @@ class MessageService:
         return MessageResponse(
             id=message.id,
             conversation_id=message.conversation_id,
-            sender=UserSummary(
-                id=message.sender.id,
-                display_name=message.sender.display_name
-            ),
+            sender=UserSummary.model_validate(message.sender, from_attributes=True),
             content=message.content,
             message_type=message.message_type,
             created_at=message.created_at,
@@ -627,10 +621,7 @@ class MessageService:
         for participant in conversation.participants:
             if participant.user_id != current_user_id:
                 participants.append(ConversationParticipantResponse(
-                    user=UserSummary(
-                        id=participant.user.id,
-                        display_name=participant.user.display_name
-                    ),
+                    user=UserSummary.model_validate(participant.user, from_attributes=True),
                     joined_at=participant.joined_at,
                     last_read_at=participant.last_read_at,
                     is_muted=participant.is_muted,
@@ -658,10 +649,7 @@ class MessageService:
         participants = []
         for participant in conversation.participants:
             participants.append(ConversationParticipantResponse(
-                user=UserSummary(
-                    id=participant.user.id,
-                    display_name=participant.user.display_name
-                ),
+                user=UserSummary.model_validate(participant.user, from_attributes=True),
                 joined_at=participant.joined_at,
                 last_read_at=participant.last_read_at,
                 is_muted=participant.is_muted,

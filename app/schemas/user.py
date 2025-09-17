@@ -46,6 +46,7 @@ class UserSummary(BaseModel):
     id: int
     display_name: str
     profile_image_url: Optional[str] = None
+    created_at: datetime
 
 class UserPublic(BaseModel):
     id: int

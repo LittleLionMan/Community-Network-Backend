@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from .poll import Poll, Vote
     from .comment import Comment
     from .message import Message, MessageReadReceipt, ConversationParticipant
-    from .business import ServiceInterest, ModerationAction, UserEngagement
 
 class User(Base):
     __tablename__ = "users"

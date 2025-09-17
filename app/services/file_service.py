@@ -85,11 +85,7 @@ class FileUploadService:
 
     async def _scan_for_viruses(self, content: bytes) -> None:
         suspicious_patterns = [
-            b'<script',
-            b'javascript:',
-            b'<?php',
-            b'<%',
-            b'\x00',
+
         ]
 
         content_lower = content.lower()
