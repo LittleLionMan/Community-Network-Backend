@@ -1,79 +1,110 @@
 import os
 import sys
-from typing import Dict, Any
 from pathlib import Path
 import json
+from typing import TypedDict
+
+def _validate_secret_key(value: str) -> bool:
+    return len(value) >= 32 and value != 'CHANGE_THIS_TO_A_SECURE_RANDOM_KEY_IN_PRODUCTION'
+
+def _validate_database_url(value: str) -> bool:
+    return value.startswith(('postgresql', 'sqlite'))
+
+def _validate_smtp_host(value: str) -> bool:
+    return len(value) > 0
+
+def _validate_sentry_dsn(value: str) -> bool:
+    return value.startswith('https://')
+
+def _validate_debug_setting(value: str, environment: str) -> bool:
+    return value.lower() != 'true' if environment == 'production' else True
+
+def _validate_docs_setting(value: str, environment: str) -> bool:
+    return value.lower() != 'true' if environment == 'production' else True
 
 class ConfigurationError(Exception):
     pass
 
+class ValidationResult(TypedDict):
+    environment: str
+    errors: list[str]
+    warnings: list[str]
+    valid: bool
+
 class EnvironmentValidator:
 
-    REQUIRED_SETTINGS = {
+    REQUIRED_SETTINGS: dict[str, dict[str, object]] = {
         'SECRET_KEY': {
             'description': 'JWT signing secret key',
-            'validation': lambda x: len(x) >= 32 and x != 'CHANGE_THIS_TO_A_SECURE_RANDOM_KEY_IN_PRODUCTION',
+            'validation': _validate_secret_key,
             'error': 'SECRET_KEY must be at least 32 characters and changed from default'
         },
         'DATABASE_URL': {
             'description': 'Database connection URL',
-            'validation': lambda x: x.startswith(('postgresql', 'sqlite')),
+            'validation': _validate_database_url,
             'error': 'DATABASE_URL must be a valid PostgreSQL or SQLite URL'
         }
     }
 
-    PRODUCTION_REQUIRED = {
+    PRODUCTION_REQUIRED: dict[str, dict[str, object]] = {
         'SMTP_HOST': {
             'description': 'Email server hostname',
-            'validation': lambda x: len(x) > 0,
+            'validation': _validate_smtp_host,
             'error': 'SMTP_HOST is required in production'
         },
         'SENTRY_DSN': {
             'description': 'Error monitoring DSN',
-            'validation': lambda x: x.startswith('https://'),
+            'validation': _validate_sentry_dsn,
             'error': 'SENTRY_DSN should be configured for production monitoring'
         }
     }
 
-    SECURITY_CHECKS = {
+    SECURITY_CHECKS: dict[str, dict[str, object]] = {
         'DEBUG': {
             'description': 'Debug mode setting',
-            'validation': lambda x, env: x.lower() != 'true' if env == 'production' else True,
+            'validation': _validate_debug_setting,
             'error': 'DEBUG must be false in production environment'
         },
         'DOCS_ENABLED': {
             'description': 'API documentation endpoints',
-            'validation': lambda x, env: x.lower() != 'true' if env == 'production' else True,
+            'validation': _validate_docs_setting,
             'error': 'DOCS_ENABLED should be false in production'
         }
     }
 
     @classmethod
-    def validate_environment(cls) -> Dict[str, Any]:
-        errors = []
-        warnings = []
+    def validate_environment(cls) -> ValidationResult:
+        errors: list[str] = []
+        warnings: list[str] = []
         environment = os.getenv('ENVIRONMENT', 'development').lower()
 
         for setting, config in cls.REQUIRED_SETTINGS.items():
             value = os.getenv(setting)
             if not value:
                 errors.append(f"❌ {setting} is required: {config['description']}")
-            elif not config['validation'](value):
-                errors.append(f"❌ {setting}: {config['error']}")
+            validation_func = config.get('validation')
+            if callable(validation_func):
+                if not validation_func(value):
+                    errors.append(f"❌ {setting}: {config['error']}")
+            else:
+                errors.append(f"❌ {setting}: Invalid validation configuration")
 
         if environment == 'production':
             for setting, config in cls.PRODUCTION_REQUIRED.items():
                 value = os.getenv(setting)
-                if not value or not config['validation'](value):
+                validation_func = config.get('validation')
+                if not value or (callable(validation_func) and not validation_func(value)):
                     warnings.append(f"⚠️ {setting}: {config['error']}")
 
         for setting, config in cls.SECURITY_CHECKS.items():
             value = os.getenv(setting, '')
-            if not config['validation'](value, environment):
-                if environment == 'production':
-                    errors.append(f"❌ {setting}: {config['error']}")
-                else:
-                    warnings.append(f"⚠️ {setting}: {config['error']}")
+            validation_func = config.get('validation')
+            if callable(validation_func):
+                if not validation_func(value, environment):
+                    if environment == 'production':
+                        errors.append(f"❌ {setting}: {config['error']}")
+                    else:
+                        warnings.append(f"⚠️ {setting}: {config['error']}")
 
         upload_dir = os.getenv('UPLOAD_DIR', '/app/uploads')
         try:
@@ -92,16 +123,17 @@ class EnvironmentValidator:
 
         cors_origins = os.getenv('BACKEND_CORS_ORIGINS', '[]')
         try:
-            origins = json.loads(cors_origins)
+            origins = json.loads(cors_origins) # type: ignore[misc]
             if not isinstance(origins, list):
                 warnings.append("⚠️ BACKEND_CORS_ORIGINS should be a JSON array")
+
         except json.JSONDecodeError:
             warnings.append("⚠️ BACKEND_CORS_ORIGINS is not valid JSON")
 
         numeric_settings = {
-            'MAX_FILE_SIZE': (1024, 50 * 1024 * 1024),  # 1KB - 50MB
+            'MAX_FILE_SIZE': (1024, 50 * 1024 * 1024),
             'RATE_LIMIT_PER_MINUTE': (1, 10000),
-            'ACCESS_TOKEN_EXPIRE_MINUTES': (5, 1440)  # 5 min - 24 hours
+            'ACCESS_TOKEN_EXPIRE_MINUTES': (5, 1440)
         }
 
         for setting, (min_val, max_val) in numeric_settings.items():
@@ -114,12 +146,12 @@ class EnvironmentValidator:
                 except ValueError:
                     warnings.append(f"⚠️ {setting} should be a number")
 
-        return {
-            'environment': environment,
-            'errors': errors,
-            'warnings': warnings,
-            'valid': len(errors) == 0
-        }
+        return ValidationResult(
+            environment=environment,
+            errors=errors,
+            warnings=warnings,
+            valid=len(errors) == 0
+        )
 
     @classmethod
     def validate_or_exit(cls) -> None:
@@ -137,13 +169,17 @@ class EnvironmentValidator:
 
         print("🔧 Environment Configuration Validation")
         print("=" * 50)
-        print(f"Environment: {result['environment'].upper()}")
+        environment = result.get('environment', 'unknown')
+        print(f"Environment: {environment.upper()}")
+
 
         result = cls.validate_environment()
 
         print("🔧 Environment Configuration Validation")
         print("=" * 50)
-        print(f"Environment: {result['environment'].upper()}")
+        environment = result.get('environment', 'unknown')
+        print(f"Environment: {environment.upper()}")
+
 
         if result['warnings']:
             print("\n⚠️ WARNINGS:")

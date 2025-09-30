@@ -1,18 +1,20 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 import logging
+from sqlalchemy import update
+from app.models.message import Message
 
 from app.database import AsyncSessionLocal
 from app.services.event_service import EventService
-from ..database import get_db
-from ..services.message_service import MessageService
 from ..services.websocket_service import websocket_manager
+
 
 logger = logging.getLogger(__name__)
 
 class SchedulerService:
+    scheduler: AsyncIOScheduler
+
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
 
@@ -68,13 +70,13 @@ class SchedulerService:
 
                 cutoff_date = datetime.now() - timedelta(days=30)
 
-                await db.execute(
+                _ = await db.execute(
                     delete(RefreshToken).where(RefreshToken.expires_at < cutoff_date)
                 )
-                await db.execute(
+                _ = await db.execute(
                     delete(EmailVerificationToken).where(EmailVerificationToken.expires_at < cutoff_date)
                 )
-                await db.execute(
+                _ = await db.execute(
                     delete(PasswordResetToken).where(PasswordResetToken.expires_at < cutoff_date)
                 )
                 user_cutoff_date = datetime.now() - timedelta(days=30)
@@ -112,7 +114,6 @@ class SchedulerService:
                 from app.models.event import Event
                 from sqlalchemy import select
 
-                # Find events that ended more than 1 hour ago
                 cutoff_time = datetime.now() - timedelta(hours=1)
 
                 result = await db.execute(
@@ -121,14 +122,14 @@ class SchedulerService:
                         Event.is_active == True
                     ).limit(10)
                 )
-                events = result.scalars().all()
+                events: list[Event] = list(result.scalars().all())
 
                 event_service = EventService(db)
                 processed = 0
 
                 for event in events:
                     result = await event_service.auto_mark_attendance(event.id)
-                    if result["success"]:
+                    if result.get("success", False):
                         processed += 1
 
                 logger.info(f"✅ Processed {processed} events for attendance")
@@ -138,7 +139,6 @@ class SchedulerService:
 
 
     async def _cleanup_message_system(self):
-        """Clean up message system data."""
         try:
             from app.services.message_service import MessageService
 
@@ -157,18 +157,14 @@ class SchedulerService:
             logger.error(f"❌ Message system cleanup failed: {e}")
 
     async def weekly_message_analytics_cleanup(self):
-        """Weekly cleanup for message analytics data."""
         try:
             logger.info("🧹 Starting weekly message analytics cleanup...")
 
             async with AsyncSessionLocal() as db:
-                from sqlalchemy import delete, update
-                from app.models.message import Message
 
                 cutoff_date = datetime.now() - timedelta(days=180)
 
-                # FIX: Korrekte update() Syntax
-                await db.execute(
+                _ = await db.execute(
                     update(Message)
                     .where(
                         Message.moderated_at < cutoff_date,
@@ -188,9 +184,7 @@ class SchedulerService:
             logger.error(f"❌ Weekly message analytics cleanup failed: {e}")
 
     def setup_message_cleanup_jobs(self):
-        """Setup message-specific cleanup jobs."""
         try:
-            # Daily message cleanup at 3 AM
             self.scheduler.add_job(
                 self._cleanup_message_system,
                 'cron',
@@ -200,18 +194,16 @@ class SchedulerService:
                 replace_existing=True
             )
 
-            # Weekly analytics cleanup on Sundays at 4 AM
             self.scheduler.add_job(
                 self.weekly_message_analytics_cleanup,
                 'cron',
-                day_of_week=6,  # Sunday
+                day_of_week=6,
                 hour=4,
                 minute=0,
                 id='weekly_message_analytics_cleanup',
                 replace_existing=True
             )
 
-            # Clean up WebSocket typing statuses every 30 seconds
             self.scheduler.add_job(
                 lambda: websocket_manager.cleanup_old_typing_status(10),
                 'interval',

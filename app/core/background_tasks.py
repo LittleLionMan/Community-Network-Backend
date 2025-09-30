@@ -11,6 +11,8 @@ from .monitoring import run_rate_limit_monitoring
 logger = logging.getLogger(__name__)
 
 class BackgroundTaskManager:
+    running: bool
+    tasks: list[asyncio.Task[None]]
 
     def __init__(self):
         self.running = False
@@ -39,9 +41,9 @@ class BackgroundTaskManager:
         logger.info("Stopping background tasks...")
 
         for task in self.tasks:
-            task.cancel()
+            _ = task.cancel()
 
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        _ = await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
 
         logger.info("All background tasks stopped")
@@ -64,11 +66,13 @@ class BackgroundTaskManager:
             try:
                 health_report = await run_rate_limit_monitoring()
 
-                if health_report and health_report["health_score"] < 60:
-                    logger.warning(
-                        f"Rate limiting health degraded: {health_report['health_score']}/100",
-                        extra={"health_report": health_report}
-                    )
+                if health_report:
+                    health_score = health_report.get("health_score")
+                    if isinstance(health_score, (int, float)) and health_score < 60:
+                        logger.warning(
+                            f"Rate limiting health degraded: {health_score}/100",
+                            extra={"health_report": health_report}
+                        )
 
                 await asyncio.sleep(1800)
 
@@ -93,9 +97,9 @@ class BackgroundTaskManager:
 
                 if total_cleaned > 0:
                     logger.info(
-                        f"Token cleanup completed: "
-                        f"{refresh_count} refresh, "
-                        f"{email_count} email verification, "
+                        f"Token cleanup completed: " +
+                        f"{refresh_count} refresh, " +
+                        f"{email_count} email verification, " +
                         f"{reset_count} password reset tokens cleaned"
                     )
 

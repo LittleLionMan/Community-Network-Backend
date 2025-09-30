@@ -1,16 +1,41 @@
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Tuple
+from typing import TypedDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from ..models.event import Event, EventParticipation
 from ..models.user import User
 from ..models.enums import ParticipationStatus
 
+class EventCapacityInfo(TypedDict, total=False):
+    has_capacity_limit: bool
+    max_participants: int | None
+    current_participants: int
+    available_spots: int | None
+    is_full: bool
+    utilization_percentage: float
+    error: str
+
+class AutoAttendanceResult(TypedDict, total=False):
+    success: bool
+    reason: str
+    participants_updated: int
+    event_title: str
+
+class UserEventHistory(TypedDict, total=False):
+    upcoming_events: int
+    events_attended: int
+    events_cancelled: int
+    attendance_rate: float
+    total_events: int
+    engagement_level: str
+    error: str
+
 class EventService:
+    db: AsyncSession
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def can_join_event(self, event: Event, user: User) -> Tuple[bool, str]:
+    async def can_join_event(self, event: Event | None, user: User | None) -> tuple[bool, str]:
         if not event or not user:
             return False, "Invalid event or user"
 
@@ -65,7 +90,7 @@ class EventService:
 
         return True, "Can join"
 
-    async def get_event_capacity_info(self, event: Event) -> Dict[str, Any]:
+    async def get_event_capacity_info(self, event: Event) -> EventCapacityInfo:
 
         if not event.max_participants:
             return {
@@ -107,7 +132,7 @@ class EventService:
                 "error": "Could not fetch current capacity"
             }
 
-    async def auto_mark_attendance(self, event_id: int) -> Dict[str, Any]:
+    async def auto_mark_attendance(self, event_id: int) -> AutoAttendanceResult:
 
         try:
             event = await self.db.get(Event, event_id)
@@ -150,11 +175,12 @@ class EventService:
             )
 
             await self.db.commit()
+            actual_updated = result.rowcount or 0
 
             return {
                 "success": True,
                 "reason": "Auto-attendance processed successfully",
-                "participants_updated": participants_to_update,
+                "participants_updated": actual_updated,
                 "event_title": event.title
             }
 
@@ -165,7 +191,7 @@ class EventService:
                 "participants_updated": 0
             }
 
-    async def get_user_event_history(self, user_id: int) -> Dict[str, Any]:
+    async def get_user_event_history(self, user_id: int) -> UserEventHistory:
 
         if not user_id:
             return {
@@ -192,9 +218,9 @@ class EventService:
             cancelled = 0
 
             if stats:
-                upcoming = stats.upcoming if stats.upcoming is not None else 0
-                attended = stats.attended if stats.attended is not None else 0
-                cancelled = stats.cancelled if stats.cancelled is not None else 0
+                upcoming = int(getattr(stats, 'upcoming', 0) or 0)
+                attended = int(getattr(stats, 'attended', 0) or 0)
+                cancelled = int(getattr(stats, 'cancelled', 0) or 0)
 
             total_completed = attended + cancelled
             attendance_rate = (attended / total_completed * 100) if total_completed > 0 else 0.0
@@ -220,7 +246,6 @@ class EventService:
             }
 
     def _calculate_engagement_level(self, total_events: int) -> str:
-        """Calculate user engagement level based on event participation"""
         if total_events == 0:
             return "new"
         elif total_events < 3:

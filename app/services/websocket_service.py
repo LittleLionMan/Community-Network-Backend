@@ -1,5 +1,4 @@
 from fastapi import WebSocket
-from typing import Dict, Set, Optional
 import json
 import logging
 import time
@@ -9,18 +8,19 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 class WebSocketManager:
+
     def __init__(self):
-        self.poll_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
-        self.event_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
-        self.global_connections: Set[WebSocket] = set()
-        self.user_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
-        self.conversation_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
+        self.poll_connections: dict[int, set[WebSocket]] = defaultdict(set)
+        self.event_connections: dict[int, set[WebSocket]] = defaultdict(set)
+        self.global_connections: set[WebSocket] = set()
+        self.user_connections: dict[int, set[WebSocket]] = defaultdict(set)
+        self.conversation_connections: dict[int, set[WebSocket]] = defaultdict(set)
 
-        self.typing_status: Dict[int, Dict[int, float]] = defaultdict(dict)
+        self.typing_status: dict[int, dict[int, float]] = defaultdict(dict)
 
-        self.connection_metadata: Dict[WebSocket, Dict] = {}
+        self.connection_metadata: dict[WebSocket, dict[str, object]] = {}
 
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._start_cleanup_task()
 
     def _start_cleanup_task(self):
@@ -31,8 +31,8 @@ class WebSocketManager:
         self,
         websocket: WebSocket,
         connection_type: str,
-        item_id: Optional[int] = None,
-        user_id: Optional[int] = None
+        item_id: int | None = None,
+        user_id: int | None = None
     ):
         await websocket.accept()
 
@@ -81,21 +81,20 @@ class WebSocketManager:
         self._remove_from_dict_sets(self.user_connections, websocket)
         self._remove_from_dict_sets(self.conversation_connections, websocket)
 
-        # ✅ Clean up typing status for this connection
         user_id = metadata.get('user_id')
         connection_type = metadata.get('type')
         if user_id and connection_type == 'conversation':
             item_id = metadata.get('item_id')
-            if item_id and item_id in self.typing_status:
-                self.typing_status[item_id].pop(user_id, None)
+            if isinstance(item_id, int) and isinstance(user_id, int) and item_id in self.typing_status:
+                _ = self.typing_status[item_id].pop(user_id, None)
                 if not self.typing_status[item_id]:
                     del self.typing_status[item_id]
 
-    def _remove_from_dict_sets(self, dict_sets: Dict[int, Set[WebSocket]], websocket: WebSocket):
-        keys_to_remove = []
+    def _remove_from_dict_sets(self, dict_sets: dict[int, set[WebSocket]], websocket: WebSocket):
+        keys_to_remove: list[int] = []
         for key, connection_set in dict_sets.items():
             connection_set.discard(websocket)
-            if not connection_set:  # Remove empty sets
+            if not connection_set:
                 keys_to_remove.append(key)
 
         for key in keys_to_remove:
@@ -104,34 +103,35 @@ class WebSocketManager:
     async def _periodic_cleanup(self):
         while True:
             try:
-                await asyncio.sleep(60)  # Check every minute
+                await asyncio.sleep(60)
                 current_time = time.time()
 
                 self.cleanup_old_typing_status(30)
 
-                stale_connections = []
+                stale_connections: list[WebSocket] = []
                 for websocket, metadata in self.connection_metadata.items():
-                    if current_time - metadata.get('connected_at', 0) > 86400:  # 24 hours
+                    connected_at = metadata.get('connected_at', 0)
+                    if isinstance(connected_at, (int, float)) and current_time - connected_at > 86400:
                         stale_connections.append(websocket)
 
                 for websocket in stale_connections:
                     self.disconnect(websocket)
 
-                if int(current_time) % 3600 == 0:  # Every hour
+                if int(current_time) % 3600 == 0:
                     self._log_memory_stats()
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Cleanup task error: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes on error
+                await asyncio.sleep(300)
 
     def cleanup_old_typing_status(self, max_age_seconds: int = 10):
         current_time = time.time()
-        conversations_to_clean = []
+        conversations_to_clean: list[int] = []
 
         for conversation_id in list(self.typing_status.keys()):
-            users_to_clean = []
+            users_to_clean: list[int] = []
 
             for user_id, timestamp in list(self.typing_status[conversation_id].items()):
                 if current_time - timestamp > max_age_seconds:
@@ -147,7 +147,6 @@ class WebSocketManager:
             del self.typing_status[conversation_id]
 
     def _log_memory_stats(self):
-        """Log current memory usage for monitoring"""
         stats = {
             'global_connections': len(self.global_connections),
             'poll_connections': sum(len(conns) for conns in self.poll_connections.values()),
@@ -168,13 +167,13 @@ class WebSocketManager:
     def is_user_connected(self, user_id: int) -> bool:
         return user_id in self.user_connections and len(self.user_connections[user_id]) > 0
 
-    async def send_to_user(self, user_id: int, message: dict):
+    async def send_to_user(self, user_id: int, message: dict[str, object]):
         if user_id not in self.user_connections:
             logger.debug(f"No connections found for user {user_id}")
             return
 
         message_str = json.dumps(message)
-        dead_connections = set()
+        dead_connections: set[WebSocket] = set()
 
         for websocket in self.user_connections[user_id].copy():
             try:
@@ -196,13 +195,13 @@ class WebSocketManager:
             self.typing_status[conversation_id][user_id] = current_time
         else:
             if conversation_id in self.typing_status:
-                self.typing_status[conversation_id].pop(user_id, None)
+                _ = self.typing_status[conversation_id].pop(user_id, None)
                 if not self.typing_status[conversation_id]:
                     del self.typing_status[conversation_id]
 
         active_typing_users = []
         if conversation_id in self.typing_status:
-            cutoff_time = current_time - 15  # 15 seconds max typing indicator
+            cutoff_time = current_time - 15
             active_typing_users = [
                 uid for uid, timestamp in self.typing_status[conversation_id].items()
                 if timestamp > cutoff_time
@@ -227,7 +226,7 @@ class WebSocketManager:
         }
 
         message_str = json.dumps(message)
-        dead_connections = set()
+        dead_connections: set[WebSocket] = set()
 
         for websocket in self.user_connections[user_id].copy():
             try:
@@ -246,12 +245,12 @@ class WebSocketManager:
             'messages_enabled': messages_enabled
         })
 
-    async def broadcast_global(self, message: dict):
+    async def broadcast_global(self, message: dict[str, object]):
         if not self.global_connections:
             return
 
         message_str = json.dumps(message)
-        dead_connections = set()
+        dead_connections: set[WebSocket] = set()
 
         for websocket in self.global_connections.copy():
             try:
@@ -264,13 +263,13 @@ class WebSocketManager:
             self.disconnect(websocket)
 
 
-    async def send_to_conversation(self, conversation_id: int, message: dict, exclude_user_id: Optional[int] = None):
+    async def send_to_conversation(self, conversation_id: int, message: dict[str, object], exclude_user_id: int | None = None):
         if conversation_id not in self.conversation_connections:
             logger.debug(f"No connections found for conversation {conversation_id}")
             return
 
         message_str = json.dumps(message)
-        dead_connections = set()
+        dead_connections: set[WebSocket] = set()
 
         for websocket in self.conversation_connections[conversation_id].copy():
             try:
@@ -287,7 +286,7 @@ class WebSocketManager:
         for websocket in dead_connections:
             self.disconnect(websocket)
 
-    def get_connection_stats(self) -> dict:
+    def get_connection_stats(self) -> dict[str, object]:
         return {
             'global_connections': len(self.global_connections),
             'poll_connections': {k: len(v) for k, v in self.poll_connections.items()},

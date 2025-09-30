@@ -1,4 +1,3 @@
-from typing import Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from dataclasses import dataclass
@@ -27,10 +26,13 @@ class UserTier(str, Enum):
 class RateLimit:
     hourly_limit: int
     daily_limit: int
-    weekly_limit: Optional[int] = None
-    burst_limit: Optional[int] = None
+    weekly_limit: int | None = None
+    burst_limit: int | None = None
 
 class ContentRateLimiter:
+    attempts: dict[int, dict[ContentType, list[tuple[float, int]]]]
+    lockouts: dict[str, float]
+    limits: dict[ContentType, dict[UserTier, RateLimit]]
 
     def __init__(self):
         self.attempts = {}
@@ -38,7 +40,7 @@ class ContentRateLimiter:
 
         self.limits = self._setup_rate_limits()
 
-    def _setup_rate_limits(self) -> Dict[ContentType, Dict[UserTier, RateLimit]]:
+    def _setup_rate_limits(self) -> dict[ContentType, dict[UserTier, RateLimit]]:
         return {
             ContentType.FORUM_POST: {
                 UserTier.NEW: RateLimit(hourly_limit=5, daily_limit=15, burst_limit=2),
@@ -136,7 +138,7 @@ class ContentRateLimiter:
         user_id: int,
         content_type: ContentType,
         user_tier: UserTier
-    ) -> Dict[str, Any]:
+    ) -> dict[str, object]:
 
         now = time.time()
         key = f"{user_id}:{content_type.value}"
@@ -241,7 +243,7 @@ class ContentRateLimiter:
             "user_tier": user_tier.value
         }
 
-    def get_user_stats(self, user_id: int) -> Dict[str, Any]:
+    def get_user_stats(self, user_id: int) -> dict[str, object]:
         if user_id not in self.attempts:
             return {"usage": {}, "lockouts": {}}
 
@@ -273,7 +275,7 @@ class ContentRateLimiter:
             "lockouts": lockouts
         }
 
-    def clear_user_limits(self, user_id: int, content_type: Optional[ContentType] = None):
+    def clear_user_limits(self, user_id: int, content_type: ContentType | None = None):
         if content_type:
             if user_id in self.attempts and content_type in self.attempts[user_id]:
                 del self.attempts[user_id][content_type]

@@ -2,10 +2,8 @@ import os
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from fastapi import HTTPException, status
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -41,7 +39,7 @@ def generate_token(length: int = 32) -> str:
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
-def create_access_token(data: Dict[str, Any]) -> str:
+def create_access_token(data: dict[str, object]) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire, "type": "access"})
@@ -51,7 +49,7 @@ def create_access_token(data: Dict[str, Any]) -> str:
 def create_refresh_token() -> str:
     return generate_token(64)
 
-def verify_token(token: str, token_type: str = "access") -> Optional[Dict[str, Any]]:
+def verify_token(token: str, token_type: str = "access") -> dict[str, object] | None:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if payload.get("type") != token_type:
@@ -77,16 +75,16 @@ def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
         msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
 
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
+        _ = server.starttls()
+        _ = server.login(SMTP_USER, SMTP_PASSWORD)
         text = msg.as_string()
-        server.sendmail(FROM_EMAIL, to_email, text)
-        server.quit()
+        _ = server.sendmail(FROM_EMAIL, to_email, text)
+        _ = server.quit()
 
     except Exception as e:
         print(f"📧 Failed to send email to {to_email}: {e}")
 
-def generate_verification_email(email: str, token: str) -> str:
+def generate_verification_email(token: str) -> str:
     verification_url = f"{BACKEND_URL}/api/auth/verify-email?token={token}"
 
     return f"""
@@ -146,7 +144,7 @@ def generate_verification_email(email: str, token: str) -> str:
     </html>
     """
 
-def generate_password_reset_email(email: str, token: str) -> str:
+def generate_password_reset_email(token: str) -> str:
     reset_url = f"{BACKEND_URL}/api/auth/reset-password?token={token}"
 
     return f"""

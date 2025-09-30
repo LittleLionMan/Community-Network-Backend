@@ -1,0 +1,15 @@
+[tool.ruff.per-file-ignores]
+"app/models/*.py" = ["F821"]  # SQLAlchemy forward refs
+
+[tool.basedpyright]
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "app/models"
+reportUndefinedVariable = false
+reportUnknownArgumentType = false
+reportUnannotatedClassAttribute = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "."

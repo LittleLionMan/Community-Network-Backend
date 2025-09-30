@@ -1,10 +1,10 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services.websocket_service import websocket_manager
-from app.core.dependencies import get_optional_current_user
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
 
 @router.websocket("/ws/global")
 async def websocket_global(websocket: WebSocket):
@@ -12,10 +12,11 @@ async def websocket_global(websocket: WebSocket):
 
     try:
         while True:
-            await websocket.receive_text()
+            _ = await websocket.receive_text()
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
         logger.info("📡 Global connection disconnected")
+
 
 @router.websocket("/ws/poll/{poll_id}")
 async def websocket_poll(websocket: WebSocket, poll_id: int):
@@ -23,10 +24,11 @@ async def websocket_poll(websocket: WebSocket, poll_id: int):
 
     try:
         while True:
-            await websocket.receive_text()
+            _ = await websocket.receive_text()
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
         logger.info(f"📡 Poll {poll_id} connection disconnected")
+
 
 # Usage in your poll voting endpoint:
 # After successful vote, add this:

@@ -1,15 +1,21 @@
 import os
 import io
 import hashlib
-import magic
+import magic as python_magic
 from pathlib import Path
-from typing import Tuple, List
 from fastapi import HTTPException, UploadFile
 from datetime import datetime
 from PIL import Image
 import uuid
 
 class FileUploadService:
+    upload_base: Path
+    profile_images_dir: Path
+    service_images_dir: Path
+    max_file_size: int
+    allowed_image_types: set[str]
+    magic: python_magic.Magic
+
     def __init__(self):
         self.upload_base = Path(os.getenv("UPLOAD_DIR", "/app/uploads")).absolute()
         self.profile_images_dir = self.upload_base / "profile_images"
@@ -26,9 +32,9 @@ class FileUploadService:
             'image/jpeg', 'image/png', 'image/gif', 'image/webp'
         }
 
-        self.magic = magic.Magic(mime=True)
+        self.magic = python_magic.Magic(mime=True)
 
-    async def upload_profile_image(self, file: UploadFile, user_id: int) -> Tuple[str, str]:
+    async def upload_profile_image(self, file: UploadFile, user_id: int) -> tuple[str, str]:
         if hasattr(file, 'size') and file.size and file.size > self.max_file_size:
             raise HTTPException(
                 status_code=413,
@@ -65,7 +71,7 @@ class FileUploadService:
                 detail="Invalid or corrupted image file"
             )
 
-        await self._scan_for_viruses(content)
+        self._basic_security_checks(content)
 
         file_hash = hashlib.sha256(content).hexdigest()[:16]
         file_extension = self._get_safe_extension(detected_mime)
@@ -83,27 +89,13 @@ class FileUploadService:
         public_url = f"/uploads/profile_images/{filename}"
         return str(file_path), public_url
 
-    async def _scan_for_viruses(self, content: bytes) -> None:
-        suspicious_patterns = [
+    def _basic_security_checks(self, content: bytes) -> None:
 
-        ]
-
-        content_lower = content.lower()
-        for pattern in suspicious_patterns:
-            if pattern in content_lower:
-                raise HTTPException(
-                    status_code=400,
-                    detail="File contains suspicious content"
-                )
-
-        # TODO: Integrate real virus scanner
-        # try:
-        #     result = clamd.scan_stream(content)
-        #     if result and 'FOUND' in str(result):
-        #         raise HTTPException(status_code=400, detail="Virus detected")
-        # except Exception:
-        #     # Fail safe - reject if scanner unavailable
-        #     raise HTTPException(status_code=503, detail="Security scan unavailable")
+        if content.startswith(b'MZ') or content.startswith(b'\x7fELF'):
+            raise HTTPException(
+                status_code=400,
+                detail="Executable files are not allowed"
+            )
 
     def _get_safe_extension(self, mime_type: str) -> str:
         mime_to_ext = {
@@ -142,7 +134,7 @@ class FileUploadService:
 
         return False
 
-    async def upload_service_image(self, file: UploadFile, user_id: int) -> Tuple[str, str]:
+    async def upload_service_image(self, file: UploadFile, user_id: int) -> tuple[str, str]:
 
         if hasattr(file, 'size') and file.size and file.size > self.max_file_size:
             raise HTTPException(
@@ -189,7 +181,7 @@ class FileUploadService:
                 detail="Invalid or corrupted image file"
             )
 
-        await self._scan_for_viruses(content)
+        self._basic_security_checks(content)
 
         file_hash = hashlib.sha256(content).hexdigest()[:16]
         file_extension = self._get_safe_extension(detected_mime)
@@ -226,13 +218,13 @@ class FileUploadService:
 
         return False
 
-    async def cleanup_orphaned_service_images(self, active_image_urls: List[str]) -> int:
+    async def cleanup_orphaned_service_images(self, active_image_urls: list[str]) -> int:
         cleaned_count = 0
 
         try:
             all_files = list(self.service_images_dir.glob("service_*"))
 
-            active_filenames = set()
+            active_filenames: set[str] = set()
             for url in active_image_urls:
                 if url.startswith('/uploads/service_images/'):
                     active_filenames.add(url.split('/')[-1])
@@ -250,7 +242,7 @@ class FileUploadService:
 
         return cleaned_count
 
-    def get_service_image_stats(self) -> dict:
+    def get_service_image_stats(self) -> dict[str, int | float]:
         try:
             service_files = list(self.service_images_dir.glob("service_*"))
             total_files = len(service_files)

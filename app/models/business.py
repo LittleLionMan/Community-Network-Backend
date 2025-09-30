@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -13,24 +13,24 @@ class ServiceInterest(Base):
     __tablename__ = "service_interests"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    message: Mapped[Optional[str]] = mapped_column(Text)
+    message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[str] = mapped_column(String(50), default='pending')
-    response_message: Mapped[Optional[str]] = mapped_column(Text)
-    responded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    response_message: Mapped[str | None] = mapped_column(Text)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    proposed_meeting_location: Mapped[Optional[str]] = mapped_column(String(500))
-    proposed_meeting_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    agreed_meeting_location: Mapped[Optional[str]] = mapped_column(String(500))
-    agreed_meeting_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    proposed_meeting_location: Mapped[str | None] = mapped_column(String(500))
+    proposed_meeting_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    agreed_meeting_location: Mapped[str | None] = mapped_column(String(500))
+    agreed_meeting_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     completed_by_requester: Mapped[bool] = mapped_column(Boolean, default=False)
     completed_by_provider: Mapped[bool] = mapped_column(Boolean, default=False)
-    completion_notes: Mapped[Optional[str]] = mapped_column(Text)
+    completion_notes: Mapped[str | None] = mapped_column(Text)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"))
-    conversation_id: Mapped[Optional[int]] = mapped_column(ForeignKey("conversations.id"))
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"))
 
 class ServiceTag(Base):
     __tablename__ = "service_tags"
@@ -38,7 +38,7 @@ class ServiceTag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -47,7 +47,7 @@ class ModerationAction(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     action_type: Mapped[str] = mapped_column(String(50))
-    reason: Mapped[Optional[str]] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
     confidence_score: Mapped[float] = mapped_column(default=1.0)
     automated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -55,7 +55,7 @@ class ModerationAction(Base):
     content_type: Mapped[str] = mapped_column(String(50))
     content_id: Mapped[int] = mapped_column(Integer)
 
-    moderator_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    moderator_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
 
 class ServiceTagAssociation(Base):

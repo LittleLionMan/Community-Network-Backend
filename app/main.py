@@ -1,33 +1,62 @@
 from fastapi import FastAPI, Request, BackgroundTasks, Depends
+from typing import Annotated, cast
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-import structlog
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from dotenv import load_dotenv
 from pathlib import Path
 
 env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
+_ = load_dotenv(dotenv_path=env_path)
 
 from app.config import settings
-from app.api import auth, users, event_categories, events, services, discussions, comments, polls, forum_categories, messages, admin_security
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.services.scheduler_service import scheduler_service
 from app.core.logging import SecurityLogger
 from app.api import admin_rate_limits
 from app.core.monitoring import rate_limit_monitor
+from app.core.middleware import setup_middleware
+from app.core.background_tasks import (
+    startup_background_tasks,
+    shutdown_background_tasks,
+    run_maintenance,
+)
+from app.services.event_service import EventService
+from app.api import (
+    auth,
+    users,
+    event_categories,
+    events,
+    services,
+    discussions,
+    comments,
+    polls,
+    forum_categories,
+    messages,
+    admin_security,
+)
+from app.models.user import User
+from app.models.event import Event
+from app.models.service import Service
+from app.models.poll import Poll
+from app.models.comment import Comment
+from app.models.forum import ForumPost
+from app.models.poll import Poll, Vote
+from app.models.message import Message, Conversation
+from app.models.auth import RefreshToken
 
-from app.core.background_tasks import startup_background_tasks, shutdown_background_tasks, run_maintenance
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger = structlog.get_logger()
+async def lifespan(_app: FastAPI):
     logger.info("🚀 Community Platform API starting up")
 
     try:
@@ -56,12 +85,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Shutdown error: {e}")
 
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
     openapi_url="/api/openapi.json" if settings.DEBUG else None,
-    lifespan=lifespan
+    lifespan=lifespan,
 )
+
+setup_middleware(app)
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
@@ -77,19 +109,24 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
-app.include_router(event_categories.router, prefix="/api/event-categories", tags=["event-categories"])
+app.include_router(
+    event_categories.router, prefix="/api/event-categories", tags=["event-categories"]
+)
 app.include_router(events.router, prefix="/api/events", tags=["events"])
 app.include_router(services.router, prefix="/api/services", tags=["services"])
 app.include_router(discussions.router, prefix="/api/discussions", tags=["discussions"])
 app.include_router(comments.router, prefix="/api/comments", tags=["comments"])
 app.include_router(polls.router, prefix="/api/polls", tags=["polls"])
-app.include_router(forum_categories.router, prefix="/api/forum-categories", tags=["forum-categories"])
+app.include_router(
+    forum_categories.router, prefix="/api/forum-categories", tags=["forum-categories"]
+)
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(admin_security.router, prefix="/api", tags=["admin-security"])
 app.include_router(admin_rate_limits.router, prefix="/api")
 
+
 @app.get("/health")
-async def health_check(request: Request):
+async def health_check():
     health_status = {
         "status": "healthy",
         "version": settings.VERSION,
@@ -106,16 +143,17 @@ async def health_check(request: Request):
             "polling": True,
             "messages": True,
             "content_moderation": settings.CONTENT_MODERATION_ENABLED,
-            "service_matching": getattr(settings, 'SERVICE_MATCHING_ENABLED', True),
-            "auto_attendance": getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True),
+            "service_matching": getattr(settings, "SERVICE_MATCHING_ENABLED", True),
+            "auto_attendance": getattr(settings, "EVENT_AUTO_ATTENDANCE_ENABLED", True),
             "websocket_messaging": True,
             "background_tasks": True,
             "token_cleanup": True,
-            "request_monitoring": True
-        }
+            "request_monitoring": True,
+        },
     }
 
     return health_status
+
 
 @app.get("/api/auth/token-status")
 async def token_rotation_status():
@@ -128,19 +166,17 @@ async def token_rotation_status():
             "automatic_token_cleanup",
             "concurrent_refresh_protection",
             "replay_attack_prevention",
-            "structured_security_logging"
-        ]
+            "structured_security_logging",
+        ],
     }
+
 
 @app.get("/api/admin/rate-limiting/health")
 async def get_rate_limiting_health(
-    request: Request,
-    current_admin = Depends(get_current_admin_user)
+    request: Request, current_admin: Annotated[User, Depends(get_current_admin_user)]
 ):
     SecurityLogger.log_admin_action(
-        request,
-        admin_user_id=current_admin.id,
-        action="view_rate_limiting_health"
+        request, admin_user_id=current_admin.id, action="view_rate_limiting_health"
     )
 
     health_report = rate_limit_monitor.check_rate_limit_health()
@@ -151,73 +187,67 @@ async def get_rate_limiting_health(
         "health": health_report,
         "recent_alerts": recent_alerts,
         "monitoring_active": True,
-        "last_check": datetime.now(timezone.utc).isoformat()
+        "last_check": datetime.now(timezone.utc).isoformat(),
     }
+
 
 @app.get("/api/admin/dashboard")
 async def admin_dashboard(
     request: Request,
-    current_admin = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    from app.models.user import User
-    from app.models.event import Event
-    from app.models.service import Service
-    from app.models.comment import Comment
-    from app.models.forum import ForumPost
-    from app.models.poll import Poll, Vote
-    from app.models.message import Message, Conversation
-    from app.models.auth import RefreshToken
-
     SecurityLogger.log_admin_action(
-        request,
-        admin_user_id=current_admin.id,
-        action="dashboard_access"
+        request, admin_user_id=current_admin.id, action="dashboard_access"
     )
 
-    stats = {}
+    stats: dict[str, object] = {}
 
     try:
-        user_count = await db.execute(select(func.count(User.id)).where(User.is_active == True))
-        stats['total_users'] = user_count.scalar() or 0
+        user_count = await db.execute(select(func.count(User.id)).where(User.is_active))
+        stats["total_users"] = user_count.scalar() or 0
 
-        event_count = await db.execute(select(func.count(Event.id)).where(Event.is_active == True))
-        stats['total_events'] = event_count.scalar() or 0
+        event_count = await db.execute(
+            select(func.count(Event.id)).where(Event.is_active)
+        )
+        stats["total_events"] = event_count.scalar() or 0
 
-        service_count = await db.execute(select(func.count(Service.id)).where(Service.is_active == True))
-        stats['total_services'] = service_count.scalar() or 0
+        service_count = await db.execute(
+            select(func.count(Service.id)).where(Service.is_active)
+        )
+        stats["total_services"] = service_count.scalar() or 0
 
         comment_count = await db.execute(select(func.count(Comment.id)))
         forum_posts_count = await db.execute(select(func.count(ForumPost.id)))
-        stats['total_comments'] = comment_count.scalar() or 0
-        stats['total_forum_posts'] = forum_posts_count.scalar() or 0
+        stats["total_comments"] = comment_count.scalar() or 0
+        stats["total_forum_posts"] = forum_posts_count.scalar() or 0
 
         poll_count = await db.execute(select(func.count(Poll.id)))
         vote_count = await db.execute(select(func.count(Vote.id)))
-        stats['total_polls'] = poll_count.scalar() or 0
-        stats['total_votes'] = vote_count.scalar() or 0
+        stats["total_polls"] = poll_count.scalar() or 0
+        stats["total_votes"] = vote_count.scalar() or 0
 
         message_count = await db.execute(select(func.count(Message.id)))
         conversation_count = await db.execute(select(func.count(Conversation.id)))
         active_conversations = await db.execute(
-            select(func.count(Conversation.id)).where(Conversation.is_active == True)
+            select(func.count(Conversation.id)).where(Conversation.is_active)
         )
         flagged_messages = await db.execute(
-            select(func.count(Message.id)).where(Message.is_flagged == True)
+            select(func.count(Message.id)).where(Message.is_flagged)
         )
 
-        stats['total_messages'] = message_count.scalar() or 0
-        stats['total_conversations'] = conversation_count.scalar() or 0
-        stats['active_conversations'] = active_conversations.scalar() or 0
-        stats['flagged_messages'] = flagged_messages.scalar() or 0
+        stats["total_messages"] = message_count.scalar() or 0
+        stats["total_conversations"] = conversation_count.scalar() or 0
+        stats["active_conversations"] = active_conversations.scalar() or 0
+        stats["flagged_messages"] = flagged_messages.scalar() or 0
 
         active_tokens = await db.execute(
-            select(func.count(RefreshToken.id)).where(RefreshToken.is_revoked == False)
+            select(func.count(RefreshToken.id)).where(RefreshToken.is_revoked)
         )
         total_tokens = await db.execute(select(func.count(RefreshToken.id)))
 
-        stats['active_refresh_tokens'] = active_tokens.scalar() or 0
-        stats['total_refresh_tokens'] = total_tokens.scalar() or 0
+        stats["active_refresh_tokens"] = active_tokens.scalar() or 0
+        stats["total_refresh_tokens"] = total_tokens.scalar() or 0
 
         week_ago = datetime.now() - timedelta(days=7)
 
@@ -231,142 +261,159 @@ async def admin_dashboard(
             select(func.count(Service.id)).where(Service.created_at > week_ago)
         )
 
-        stats['recent_activity'] = {
-            'new_users_7d': recent_users.scalar() or 0,
-            'new_events_7d': recent_events.scalar() or 0,
-            'new_services_7d': recent_services.scalar() or 0
+        stats["recent_activity"] = {
+            "new_users_7d": recent_users.scalar() or 0,
+            "new_events_7d": recent_events.scalar() or 0,
+            "new_services_7d": recent_services.scalar() or 0,
         }
 
     except Exception as e:
         stats = {
-            'total_users': 0,
-            'total_events': 0,
-            'total_services': 0,
-            'total_comments': 0,
-            'total_forum_posts': 0,
-            'total_polls': 0,
-            'total_votes': 0,
-            'total_messages': 0,
-            'active_refresh_tokens': 0,
-            'total_refresh_tokens': 0,
-            'recent_activity': {
-                'new_users_7d': 0,
-                'new_events_7d': 0,
-                'new_services_7d': 0,
-                'new_messages_7d': 0
+            "total_users": 0,
+            "total_events": 0,
+            "total_services": 0,
+            "total_comments": 0,
+            "total_forum_posts": 0,
+            "total_polls": 0,
+            "total_votes": 0,
+            "total_messages": 0,
+            "active_refresh_tokens": 0,
+            "total_refresh_tokens": 0,
+            "recent_activity": {
+                "new_users_7d": 0,
+                "new_events_7d": 0,
+                "new_services_7d": 0,
+                "new_messages_7d": 0,
             },
-            'error': str(e)
+            "error": str(e),
         }
 
     try:
         rate_limit_health = rate_limit_monitor.check_rate_limit_health()
-        stats['rate_limiting'] = {
-            'health_score': rate_limit_health['health_score'],
-            'status': rate_limit_health['status'],
-            'active_users': rate_limit_health['content_rate_limits']['active_users'],
-            'total_lockouts': rate_limit_health['content_rate_limits']['total_lockouts'],
-            'monitoring_enabled': True
-        }
+
+        content_rate_limits = rate_limit_health.get("content_rate_limits", {})
+        if isinstance(content_rate_limits, dict):
+            safe_content_limits = cast(dict[str, object], content_rate_limits)
+            stats["rate_limiting"] = {
+                "health_score": rate_limit_health.get("health_score", 0),
+                "status": rate_limit_health.get("status", "unknown"),
+                "active_users": safe_content_limits.get("active_users", 0),
+                "total_lockouts": safe_content_limits.get("total_lockouts", 0),
+                "monitoring_enabled": True,
+            }
+        else:
+            stats["rate_limiting"] = {
+                "health_score": 0,
+                "status": "error",
+                "monitoring_enabled": False,
+                "error": "Invalid rate limit data structure",
+            }
+
     except Exception as e:
-        stats['rate_limiting'] = {
-            'health_score': 0,
-            'status': 'error',
-            'monitoring_enabled': False,
-            'error': str(e)
+        stats["rate_limiting"] = {
+            "health_score": 0,
+            "status": "error",
+            "monitoring_enabled": False,
+            "error": str(e),
         }
 
-    stats['security_monitoring'] = {
-        'structured_logging': True,
-        'rate_limiting': True,
-        'monitoring_active': True,
-        'note': 'Security events now tracked via structured logging'
+    stats["security_monitoring"] = {
+        "structured_logging": True,
+        "rate_limiting": True,
+        "monitoring_active": True,
+        "note": "Security events now tracked via structured logging",
     }
 
     from app.services.websocket_service import websocket_manager
+
     ws_stats = websocket_manager.get_connection_stats()
 
     return {
-        'platform_stats': stats,
-        'websocket_stats': ws_stats,
-        'health': {
-            'database': 'connected',
-            'moderation': 'active' if settings.CONTENT_MODERATION_ENABLED else 'disabled',
-            'matching': 'active' if getattr(settings, 'SERVICE_MATCHING_ENABLED', True) else 'disabled',
-            'messaging': 'active',
-            'websockets': 'active',
-            'token_rotation': 'active',
-            'structured_logging': True,        # NEW
-            'rate_limiting': True,            # NEW
-            'failed_login_protection': True,
-            'request_monitoring': True
+        "platform_stats": stats,
+        "websocket_stats": ws_stats,
+        "health": {
+            "database": "connected",
+            "moderation": "active"
+            if settings.CONTENT_MODERATION_ENABLED
+            else "disabled",
+            "matching": "active"
+            if getattr(settings, "SERVICE_MATCHING_ENABLED", True)
+            else "disabled",
+            "messaging": "active",
+            "websockets": "active",
+            "token_rotation": "active",
+            "structured_logging": True,
+            "rate_limiting": True,
+            "failed_login_protection": True,
+            "request_monitoring": True,
         },
-        'settings': {
-            'debug_mode': settings.DEBUG,
-            'content_moderation_enabled': settings.CONTENT_MODERATION_ENABLED,
-            'moderation_threshold': getattr(settings, 'MODERATION_THRESHOLD', 0.7),
-            'service_matching_enabled': getattr(settings, 'SERVICE_MATCHING_ENABLED', True),
-            'event_auto_attendance': getattr(settings, 'EVENT_AUTO_ATTENDANCE_ENABLED', True),
-            'message_system_enabled': True,
-            'refresh_token_rotation': True,
-            'structured_logging': True        # NEW
-        }
+        "settings": {
+            "debug_mode": settings.DEBUG,
+            "content_moderation_enabled": settings.CONTENT_MODERATION_ENABLED,
+            "moderation_threshold": getattr(settings, "MODERATION_THRESHOLD", 0.7),
+            "service_matching_enabled": getattr(
+                settings, "SERVICE_MATCHING_ENABLED", True
+            ),
+            "event_auto_attendance": getattr(
+                settings, "EVENT_AUTO_ATTENDANCE_ENABLED", True
+            ),
+            "message_system_enabled": True,
+            "refresh_token_rotation": True,
+            "structured_logging": True,
+        },
     }
+
 
 @app.post("/api/admin/maintenance/tokens")
 async def trigger_token_maintenance(
-    request: Request,
-    current_admin = Depends(get_current_admin_user)
+    request: Request, current_admin: Annotated[User, Depends(get_current_admin_user)]
 ):
     try:
         SecurityLogger.log_admin_action(
-            request,
-            admin_user_id=current_admin.id,
-            action="trigger_token_maintenance"
+            request, admin_user_id=current_admin.id, action="trigger_token_maintenance"
         )
 
         await run_maintenance()
         return {
             "status": "success",
-            "message": "Token maintenance completed successfully"
+            "message": "Token maintenance completed successfully",
         }
     except Exception as e:
-        logger = structlog.get_logger()
         logger.error(f"Manual token maintenance failed: {e}")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
                 "message": "Token maintenance failed",
-                "error": str(e)
-            }
+                "error": str(e),
+            },
         )
+
 
 @app.post("/api/admin/tasks/process-events")
 async def process_completed_events(
     request: Request,
     background_tasks: BackgroundTasks,
-    current_admin = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    from app.services.event_service import EventService
-    from app.models.event import Event
-
     try:
         SecurityLogger.log_admin_action(
-            request,
-            admin_user_id=current_admin.id,
-            action="process_completed_events"
+            request, admin_user_id=current_admin.id, action="process_completed_events"
         )
 
         cutoff_time = datetime.now() - timedelta(hours=1)
 
         result = await db.execute(
-            select(Event).where(
-                Event.end_datetime < cutoff_time,
-                Event.is_active == True
-            )
+            text("""
+                SELECT * FROM events
+                WHERE end_datetime IS NOT NULL
+                AND end_datetime < :cutoff_time
+                AND is_active = true
+            """),
+            {"cutoff_time": cutoff_time},
         )
-        events = result.scalars().all()
+        events = cast(list[Event], result.scalars().all())
 
         event_service = EventService(db)
         for event in events:
@@ -374,28 +421,27 @@ async def process_completed_events(
 
         return {
             "message": f"Scheduled processing for {len(events)} completed events",
-            "events_processed": len(events)
+            "events_processed": len(events),
         }
     except Exception as e:
         return {
             "message": "Failed to process events",
             "error": str(e),
-            "events_processed": 0
+            "events_processed": 0,
         }
+
 
 @app.post("/api/admin/tasks/cleanup-messages")
 async def cleanup_message_system(
-    request: Request,  # NEW: Add request for logging
-    current_admin = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     from app.services.message_service import MessageService
 
     try:
         SecurityLogger.log_admin_action(
-            request,
-            admin_user_id=current_admin.id,
-            action="cleanup_message_system"
+            request, admin_user_id=current_admin.id, action="cleanup_message_system"
         )
 
         message_service = MessageService(db)
@@ -407,24 +453,24 @@ async def cleanup_message_system(
         return {
             "message": "Message system cleanup completed",
             "old_messages_removed": old_messages_count,
-            "empty_conversations_removed": empty_conversations_count
+            "empty_conversations_removed": empty_conversations_count,
         }
     except Exception as e:
         return {
             "message": "Message cleanup failed",
             "error": str(e),
             "old_messages_removed": 0,
-            "empty_conversations_removed": 0
+            "empty_conversations_removed": 0,
         }
+
+
 @app.get("/api/admin/security-overview")
 async def security_overview(
     request: Request,
-    current_admin = Depends(get_current_admin_user)
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
 ):
     SecurityLogger.log_admin_action(
-        request,
-        admin_user_id=current_admin.id,
-        action="view_security_overview"
+        request, admin_user_id=current_admin.id, action="view_security_overview"
     )
 
     return {
@@ -435,22 +481,21 @@ async def security_overview(
             "rate_limiting": True,
             "failed_login_protection": True,
             "suspicious_activity_detection": True,
-            "admin_action_auditing": True
+            "admin_action_auditing": True,
         },
         "note": "Detailed security metrics available through log aggregation system",
-        "recommendation": "Set up ELK stack or similar for detailed security analytics"
+        "recommendation": "Set up ELK stack or similar for detailed security analytics",
     }
+
 
 @app.post("/api/admin/tasks/trigger-cleanup")
 async def trigger_cleanup(
     request: Request,
-    current_admin = Depends(get_current_admin_user)
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
 ):
     try:
         SecurityLogger.log_admin_action(
-            request,
-            admin_user_id=current_admin.id,
-            action="trigger_system_cleanup"
+            request, admin_user_id=current_admin.id, action="trigger_system_cleanup"
         )
 
         await scheduler_service.daily_cleanup()
@@ -460,52 +505,39 @@ async def trigger_cleanup(
     except Exception as e:
         return {"message": f"Cleanup failed: {str(e)}"}
 
+
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger = structlog.get_logger()
+async def global_exception_handler(exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
 
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "detail": "An unexpected error occurred"
-        }
+            "detail": "An unexpected error occurred",
+        },
     )
 
+
 @app.get("/api/stats")
-async def public_platform_stats(db: AsyncSession = Depends(get_db)):
+async def public_platform_stats(db: Annotated[AsyncSession, Depends(get_db)]):
     from sqlalchemy import func, select
-    from app.models.user import User
-    from app.models.event import Event
-    from app.models.service import Service
-    from app.models.poll import Poll
-    from app.models.message import Message
 
     try:
-        user_count = await db.execute(
-            select(func.count(User.id)).where(User.is_active == True)
-        )
+        user_count = await db.execute(select(func.count(User.id)).where(User.is_active))
 
         active_events = await db.execute(
             select(func.count(Event.id)).where(
-                Event.is_active == True,
-                Event.start_datetime > datetime.now()
+                Event.is_active, Event.start_datetime > datetime.now()
             )
         )
 
         active_services = await db.execute(
-            select(func.count(Service.id)).where(Service.is_active == True)
+            select(func.count(Service.id)).where(Service.is_active)
         )
 
         active_polls = await db.execute(
-            select(func.count(Poll.id)).where(Poll.is_active == True)
-        )
-
-        recent_messages = await db.execute(
-            select(func.count(Message.id)).where(
-                Message.created_at > datetime.now() - timedelta(days=30)
-            )
+            select(func.count(Poll.id)).where(Poll.is_active)
         )
 
         return {
@@ -517,11 +549,11 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             "security_features": [
                 "refresh_token_rotation",
                 "automatic_cleanup",
-                "structured_logging",      # NEW
-                "rate_limiting"           # NEW
-            ]
+                "structured_logging",
+                "rate_limiting",
+            ],
         }
-    except Exception as e:
+    except Exception:
         return {
             "community_size": 0,
             "upcoming_events": 0,
@@ -529,5 +561,5 @@ async def public_platform_stats(db: AsyncSession = Depends(get_db)):
             "active_polls": 0,
             "recent_messages": 0,
             "platform_version": settings.VERSION,
-            "error": "Stats temporarily unavailable"
+            "error": "Stats temporarily unavailable",
         }

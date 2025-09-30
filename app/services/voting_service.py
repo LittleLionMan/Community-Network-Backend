@@ -1,15 +1,26 @@
-from typing import Dict, List, Any, Optional
+from typing import TypedDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from ..models.poll import Poll, PollOption, Vote
-from ..models.user import User
 from datetime import datetime
 
+class PollOptionResult(TypedDict):
+    option_id: int
+    text: str
+    votes: int
+    percentage: float
+
+class WinnerInfo(TypedDict):
+    option_id: int
+    text: str
+
 class VotingService:
+    db: AsyncSession
+
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def analyze_poll_results(self, poll_id: int) -> Dict[str, Any]:
+    async def analyze_poll_results(self, poll_id: int) -> dict[str, object]:
 
         result = await self.db.execute(
             select(Poll).where(Poll.id == poll_id)
@@ -32,13 +43,15 @@ class VotingService:
             .order_by(PollOption.order_index)
         )
 
-        options_data = []
+        options_data: list[PollOptionResult] = []
         total_votes = 0
         max_votes = 0
-        winners = []
+        winners: list[WinnerInfo] = []
 
-        for option_id, text, count in vote_data:
-            vote_count = count or 0
+        for row in vote_data:
+            option_id: int = row[0] or 0
+            text: str = row[1] or ""
+            vote_count: int = row[2] or 0
             options_data.append({
                 'option_id': option_id,
                 'text': text,
@@ -72,12 +85,11 @@ class VotingService:
             'options': options_data,
             'winners': winners,
             'result_type': result_type,
-            'is_concluded': poll.ends_at and poll.ends_at < datetime.now() if poll.ends_at else False,  # ✅ Fixed datetime import
+            'is_concluded': poll.ends_at and poll.ends_at < datetime.now() if poll.ends_at else False,
             'participation_rate': self._calculate_participation_rate(total_votes)
         }
 
     def _calculate_participation_rate(self, votes: int) -> str:
-        """Simple participation assessment"""
         if votes == 0:
             return "no_participation"
         elif votes < 5:
@@ -87,7 +99,7 @@ class VotingService:
         else:
             return "high"
 
-    async def get_user_voting_stats(self, user_id: int) -> Dict[str, Any]:
+    async def get_user_voting_stats(self, user_id: int) -> dict[str, object]:
 
         polls_created_result = await self.db.execute(
             select(func.count(Poll.id)).where(Poll.creator_id == user_id)
@@ -118,8 +130,7 @@ class VotingService:
         else:
             return "high"
 
-    async def suggest_poll_duration(self, poll_type: str, expected_participants: Optional[int] = None) -> int:
-        """Suggest optimal poll duration in hours"""
+    async def suggest_poll_duration(self, poll_type: str, expected_participants: int | None = None) -> int:
 
         if poll_type == "admin":
             return 168

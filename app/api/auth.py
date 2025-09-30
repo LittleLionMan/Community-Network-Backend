@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from fastapi.responses import HTMLResponse
+from typing import Annotated
 
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
@@ -11,8 +12,16 @@ from app.core.auth import verify_password
 from app.services.auth import AuthService
 from app.core.logging import SecurityLogger, rate_limiter, get_client_ip
 from app.schemas.auth import (
-    UserRegister, UserLogin, TokenResponse, TokenRefresh,
-    EmailVerification, PasswordReset, PasswordResetConfirm, EmailUpdate, PasswordUpdate
+    AvailabilityCheck,
+    UserRegister,
+    UserLogin,
+    TokenResponse,
+    TokenRefresh,
+    EmailVerification,
+    PasswordReset,
+    PasswordResetConfirm,
+    EmailUpdate,
+    PasswordUpdate,
 )
 from app.schemas.user import UserPrivate
 from app.schemas.common import ErrorResponse
@@ -21,61 +30,57 @@ from ..models.user import User
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(tags=["authentication"])
 
+
 @router.post(
     "/register",
     response_model=UserPrivate,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Email or display name already exists"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Email or display name already exists",
+        },
         422: {"model": ErrorResponse, "description": "Validation error"},
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
-    }
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
 )
 @limiter.limit("5/minute")
 async def register(
     request: Request,
     user_data: UserRegister,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
-):
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserPrivate:
     auth_service = AuthService(db)
     client_ip = get_client_ip(request)
 
     try:
         rate_check = rate_limiter.check_and_record_attempt(
-            f"register:{client_ip}",
-            max_attempts=5,
-            window_seconds=3600  # 1 hour
+            f"register:{client_ip}", max_attempts=5, window_seconds=3600
         )
 
         if not rate_check["allowed"]:
             SecurityLogger.log_rate_limit_exceeded(
-                request,
-                "registration",
-                details=rate_check
+                request, "registration", details=rate_check
             )
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Too many registration attempts. Try again in {rate_check['retry_after']} seconds."
+                detail=f"Too many registration attempts. Try again in {rate_check['retry_after']} seconds.",
             )
 
         user = await auth_service.register_user(user_data)
 
         SecurityLogger.log_registration(
-            request,
-            email=user.email,
-            user_id=user.id,
-            success=True
+            request, email=user.email, user_id=user.id, success=True
         )
 
-        return user
+        return UserPrivate.model_validate(user)
 
     except HTTPException:
         SecurityLogger.log_registration(
             request,
             email=user_data.email,
             success=False,
-            failure_reason="validation_error"
+            failure_reason="validation_error",
         )
         raise
     except Exception as e:
@@ -83,12 +88,13 @@ async def register(
             request,
             email=user_data.email,
             success=False,
-            failure_reason=f"internal_error: {str(e)}"
+            failure_reason=f"internal_error: {str(e)}",
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed"
+            detail="Registration failed",
         )
+
 
 @router.post(
     "/login",
@@ -96,14 +102,14 @@ async def register(
     responses={
         401: {"model": ErrorResponse, "description": "Invalid credentials"},
         423: {"model": ErrorResponse, "description": "Account temporarily locked"},
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
-    }
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
 )
 @limiter.limit("10/minute")
 async def login(
     request: Request,
     login_data: UserLogin,
-    db: AsyncSession = Depends(get_db)
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
     client_ip = get_client_ip(request)
@@ -112,7 +118,7 @@ async def login(
         f"login:{client_ip}:{login_data.email}",
         max_attempts=5,
         window_seconds=900,
-        lockout_seconds=1800
+        lockout_seconds=1800,
     )
 
     if not rate_check["allowed"]:
@@ -122,8 +128,8 @@ async def login(
             details={
                 "email": login_data.email,
                 "reason": rate_check["reason"],
-                "retry_after": rate_check["retry_after"]
-            }
+                "retry_after": rate_check["retry_after"],
+            },
         )
 
         raise HTTPException(
@@ -131,8 +137,8 @@ async def login(
             detail=f"Account temporarily locked due to too many failed attempts. Try again in {rate_check['retry_after']} seconds.",
             headers={
                 "Retry-After": str(rate_check["retry_after"]),
-                "X-Lockout-Reason": "failed_attempts"
-            }
+                "X-Lockout-Reason": "failed_attempts",
+            },
         )
 
     user = await auth_service.authenticate_user(login_data.email, login_data.password)
@@ -142,12 +148,12 @@ async def login(
             request,
             email=login_data.email,
             success=False,
-            failure_reason="invalid_credentials"
+            failure_reason="invalid_credentials",
         )
 
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail="Incorrect email or password",
         )
 
     if not user.is_active:
@@ -156,12 +162,11 @@ async def login(
             email=login_data.email,
             success=False,
             user_id=user.id,
-            failure_reason="account_inactive"
+            failure_reason="account_inactive",
         )
 
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Account is deactivated"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is deactivated"
         )
 
     if not user.email_verified:
@@ -170,37 +175,33 @@ async def login(
             email=login_data.email,
             success=False,
             user_id=user.id,
-            failure_reason="email_not_verified"
+            failure_reason="email_not_verified",
         )
 
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Email not verified. Please check your email and verify your account.",
-            headers={"X-User-Email": user.email}
+            headers={"X-User-Email": user.email},
         )
 
     SecurityLogger.log_login_attempt(
-        request,
-        email=user.email,
-        success=True,
-        user_id=user.id
+        request, email=user.email, success=True, user_id=user.id
     )
 
     tokens = await auth_service.create_tokens(user)
     return tokens
 
+
 @router.post(
     "/refresh",
     response_model=TokenResponse,
-    responses={
-        401: {"model": ErrorResponse, "description": "Invalid refresh token"}
-    }
+    responses={401: {"model": ErrorResponse, "description": "Invalid refresh token"}},
 )
 @limiter.limit("20/minute")
 async def refresh_token(
     request: Request,
     token_data: TokenRefresh,
-    db: AsyncSession = Depends(get_db)
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
 
@@ -208,9 +209,7 @@ async def refresh_token(
         tokens = await auth_service.refresh_access_token(token_data.refresh_token)
 
         SecurityLogger.log_suspicious_activity(
-            request,
-            "token_refresh_success",
-            details={"action": "token_refresh"}
+            request, "token_refresh_success", details={"action": "token_refresh"}
         )
 
         return tokens
@@ -218,48 +217,45 @@ async def refresh_token(
         SecurityLogger.log_suspicious_activity(
             request,
             "token_refresh_failed",
-            details={
-                "action": "failed_token_refresh",
-                "error": str(e.detail)
-            }
+            details={"action": "failed_token_refresh", "error": str(e.detail)},
         )
         raise
+
 
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"}
-    }
+    responses={401: {"model": ErrorResponse, "description": "Authentication required"}},
 )
 async def logout(
     request: Request,
     refresh_token_data: TokenRefresh,
-    current_user = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
-    await auth_service.revoke_refresh_token(current_user.id, refresh_token_data.refresh_token)
+    _ = await auth_service.revoke_refresh_token(
+        current_user.id, refresh_token_data.refresh_token
+    )
 
     SecurityLogger.log_login_attempt(
         request,
         email=current_user.email,
         success=True,
         user_id=current_user.id,
-        additional_data={"action": "user_logout"}
+        additional_data={"action": "user_logout"},
     )
+
 
 @router.post(
     "/logout-all",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"}
-    }
+    responses={401: {"model": ErrorResponse, "description": "Authentication required"}},
 )
 async def logout_all(
     request: Request,
-    current_user = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
     revoked_count = await auth_service.revoke_all_user_tokens(current_user.id)
@@ -271,22 +267,21 @@ async def logout_all(
         user_id=current_user.id,
         additional_data={
             "action": "logout_all_devices",
-            "tokens_revoked": revoked_count
-        }
+            "tokens_revoked": revoked_count,
+        },
     )
+
 
 @router.get(
     "/verify-email",
     status_code=status.HTTP_200_OK,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid or expired token"}
-    }
+    },
 )
 @limiter.limit("10/minute")
 async def verify_email(
-    request: Request,
-    token: str,
-    db: AsyncSession = Depends(get_db)
+    request: Request, token: str, db: Annotated[AsyncSession, Depends(get_db)]
 ):
     verification_data = EmailVerification(token=token)
     auth_service = AuthService(db)
@@ -298,7 +293,7 @@ async def verify_email(
             SecurityLogger.log_suspicious_activity(
                 request,
                 "email_verification_success",
-                details={"action": "email_verified"}
+                details={"action": "email_verified"},
             )
 
             return HTMLResponse("""
@@ -327,10 +322,14 @@ async def verify_email(
             SecurityLogger.log_suspicious_activity(
                 request,
                 "email_verification_failed",
-                details={"action": "email_verification_failed", "reason": "invalid_token"}
+                details={
+                    "action": "email_verification_failed",
+                    "reason": "invalid_token",
+                },
             )
 
-            return HTMLResponse("""
+            return HTMLResponse(
+                """
             <!DOCTYPE html>
             <html>
             <head>
@@ -350,14 +349,17 @@ async def verify_email(
                 </div>
             </body>
             </html>
-            """, status_code=400)
+            """,
+                status_code=400,
+            )
     except HTTPException as e:
         SecurityLogger.log_suspicious_activity(
             request,
             "email_verification_error",
-            details={"action": "email_verification_error", "error": str(e.detail)}
+            details={"action": "email_verification_error", "error": str(e.detail)},
         )
-        return HTMLResponse(f"""
+        return HTMLResponse(
+            f"""
         <!DOCTYPE html>
         <html>
         <head>
@@ -369,55 +371,53 @@ async def verify_email(
             <p>{e.detail}</p>
         </body>
         </html>
-        """, status_code=e.status_code)
+        """,
+            status_code=e.status_code,
+        )
+
 
 @router.post(
     "/forgot-password",
     status_code=status.HTTP_200_OK,
-    responses={
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
-    }
+    responses={429: {"model": ErrorResponse, "description": "Rate limit exceeded"}},
 )
 @limiter.limit("3/hour")
 async def forgot_password(
     request: Request,
     reset_data: PasswordReset,
-    db: AsyncSession = Depends(get_db)
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
 
-    SecurityLogger.log_password_reset(
-        request,
-        email=reset_data.email,
-        step="requested"
-    )
+    SecurityLogger.log_password_reset(request, email=reset_data.email, step="requested")
 
-    await auth_service.request_password_reset(reset_data.email)
+    _ = await auth_service.request_password_reset(reset_data.email)
     return {"message": "If the email exists, a reset link has been sent"}
+
 
 @router.post(
     "/reset-password",
     status_code=status.HTTP_200_OK,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid or expired token"}
-    }
+    },
 )
 @limiter.limit("5/minute")
 async def reset_password(
     request: Request,
     reset_data: PasswordResetConfirm,
-    db: AsyncSession = Depends(get_db)
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
 
     try:
-        success = await auth_service.reset_password(reset_data.token, reset_data.new_password)
+        success = await auth_service.reset_password(
+            reset_data.token, reset_data.new_password
+        )
 
         if success:
             SecurityLogger.log_password_reset(
-                request,
-                email="unknown",
-                step="completed"
+                request, email="unknown", step="completed"
             )
             return {"message": "Password reset successfully"}
         else:
@@ -425,25 +425,28 @@ async def reset_password(
                 request,
                 email="unknown",
                 step="failed",
-                additional_data={"reason": "invalid_token"}
+                additional_data={"reason": "invalid_token"},
             )
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password reset failed"
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Password reset failed"
             )
     except HTTPException:
         raise
 
+
 @router.put(
     "/email",
     responses={
-        501: {"model": ErrorResponse, "description": "Email changes require admin approval"}
-    }
+        501: {
+            "model": ErrorResponse,
+            "description": "Email changes require admin approval",
+        }
+    },
 )
 async def update_email(
     request: Request,
     email_data: EmailUpdate,
-    current_user = Depends(get_current_active_user)
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ):
     SecurityLogger.log_suspicious_activity(
         request,
@@ -452,8 +455,8 @@ async def update_email(
         email=current_user.email,
         details={
             "attempted_new_email": email_data.new_email,
-            "action": "deprecated_endpoint_used"
-        }
+            "action": "deprecated_endpoint_used",
+        },
     )
 
     raise HTTPException(
@@ -461,9 +464,10 @@ async def update_email(
         detail={
             "message": "E-Mail-Änderungen erfordern Admin-Genehmigung",
             "contact": "Wenden Sie sich an support@community.de für E-Mail-Änderungen",
-            "reason": "security_policy"
-        }
+            "reason": "security_policy",
+        },
     )
+
 
 @router.put(
     "/password",
@@ -472,34 +476,38 @@ async def update_email(
         400: {"model": ErrorResponse, "description": "Invalid current password"},
         401: {"model": ErrorResponse, "description": "Authentication required"},
         422: {"model": ErrorResponse, "description": "Validation error"},
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
-    }
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
 )
 @limiter.limit("5/hour")
 async def update_password(
     request: Request,
     password_data: PasswordUpdate,
-    current_user = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
 
     try:
-        if not verify_password(password_data.current_password, current_user.password_hash):
+        if not verify_password(
+            password_data.current_password, current_user.password_hash
+        ):
             SecurityLogger.log_suspicious_activity(
                 request,
                 "password_change_failed",
                 user_id=current_user.id,
                 email=current_user.email,
-                details={"reason": "invalid_current_password"}
+                details={"reason": "invalid_current_password"},
             )
 
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect"
+                detail="Current password is incorrect",
             )
 
-        success = await auth_service.update_user_password(current_user.id, password_data.new_password)
+        success = await auth_service.update_user_password(
+            current_user.id, password_data.new_password
+        )
 
         if success:
             SecurityLogger.log_password_reset(
@@ -507,14 +515,14 @@ async def update_password(
                 email=current_user.email,
                 step="completed",
                 user_id=current_user.id,
-                additional_data={"action": "password_changed_by_user"}
+                additional_data={"action": "password_changed_by_user"},
             )
 
             return {"message": "Password updated successfully"}
         else:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to update password"
+                detail="Failed to update password",
             )
 
     except HTTPException:
@@ -525,24 +533,23 @@ async def update_password(
             "password_change_error",
             user_id=current_user.id,
             email=current_user.email,
-            details={"error": str(e)}
+            details={"error": str(e)},
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Password update failed"
+            detail="Password update failed",
         )
+
 
 @router.delete(
     "/account",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"}
-    }
+    responses={401: {"model": ErrorResponse, "description": "Authentication required"}},
 )
 async def delete_account(
     request: Request,
-    current_user = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     auth_service = AuthService(db)
 
@@ -551,27 +558,24 @@ async def delete_account(
         "account_deletion",
         user_id=current_user.id,
         email=current_user.email,
-        details={"action": "account_deleted"}
+        details={"action": "account_deleted"},
     )
 
-    await auth_service.delete_user_account(current_user)
+    _ = await auth_service.delete_user_account(current_user)
+
 
 @router.get(
     "/me",
     response_model=UserPrivate,
-    responses={
-        401: {"model": ErrorResponse, "description": "Authentication required"}
-    }
+    responses={401: {"model": ErrorResponse, "description": "Authentication required"}},
 )
 async def get_current_user_info(
-    current_user = Depends(get_current_active_user)
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ):
     return current_user
 
-@router.get(
-    "/status",
-    status_code=status.HTTP_200_OK
-)
+
+@router.get("/status", status_code=status.HTTP_200_OK)
 async def auth_status():
     return {
         "status": "operational",
@@ -584,40 +588,37 @@ async def auth_status():
             "security_monitoring": True,
             "structured_logging": True,
             "failed_login_protection": True,
-            "token_rotation": True
-        }
+            "token_rotation": True,
+        },
     }
+
 
 @router.post(
     "/check-availability",
     responses={
         200: {"description": "Availability checked"},
-        422: {"model": ErrorResponse, "description": "Validation error"}
-    }
+        422: {"model": ErrorResponse, "description": "Validation error"},
+    },
 )
 @limiter.limit("30/minute")
 async def check_availability(
     request: Request,
-    availability_data: dict,
-    db: AsyncSession = Depends(get_db)
+    availability_data: AvailabilityCheck,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    email = availability_data.get("email")
-    display_name = availability_data.get("display_name")
+    email = availability_data.email
+    display_name = availability_data.display_name
 
     if not email and not display_name:
         return {"available": True}
 
     if email:
-        result = await db.execute(
-            select(User).where(User.email == email)
-        )
+        result = await db.execute(select(User).where(User.email == email))
         if result.scalar_one_or_none():
             return {"available": False, "message": "E-Mail bereits vergeben"}
 
     if display_name:
-        result = await db.execute(
-            select(User).where(User.display_name == display_name)
-        )
+        result = await db.execute(select(User).where(User.display_name == display_name))
         if result.scalar_one_or_none():
             return {"available": False, "message": "Display Name bereits vergeben"}
 

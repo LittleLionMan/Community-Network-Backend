@@ -41,5 +41,8 @@ __all__ = [
     "PollOptionCreate", "PollOptionRead",
     "VoteCreate", "VoteRead", "VoteUpdate",
     # Common
-    "ErrorResponse", "ValidationErrorResponse"
+    "ErrorResponse", "ValidationErrorResponse",
+    #Auth
+    "UserLogin", "UserRegister", "TokenResponse", "TokenRefresh",
+    "EmailVerification", "PasswordReset", "PasswordResetConfirm", "EmailUpdate"
 ]

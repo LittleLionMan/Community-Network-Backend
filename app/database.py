@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from app.config import settings
 import redis.asyncio as redis
 
@@ -15,7 +15,7 @@ AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
 
-redis_client = redis.from_url(settings.REDIS_URL)
+redis_client = redis.from_url(settings.REDIS_URL) # type: ignore[misc]
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:

@@ -1,47 +1,43 @@
 import logging
-import structlog
-import sys
-from typing import Any, Dict, Optional
+import json
 from datetime import datetime, timezone
+from fastapi import Request
 
-def get_client_ip(request) -> str:
+
+def get_client_ip(request: Request) -> str:
     return (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
-        request.headers.get("x-real-ip", "") or
-        getattr(request.client, 'host', 'unknown') if request.client else "unknown"
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or request.headers.get("x-real-ip", "")
+        or getattr(request.client, "host", "unknown")
+        if request.client
+        else "unknown"
     )
 
-def get_user_agent(request) -> str:
+
+def get_user_agent(request: Request) -> str:
     return request.headers.get("user-agent", "unknown")
 
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer() if sys.stdout.isatty() else structlog.processors.JSONRenderer()
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    logger_factory=structlog.WriteLoggerFactory(),
-    cache_logger_on_first_use=True,
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-security_logger = structlog.get_logger("security")
-auth_logger = structlog.get_logger("auth")
-admin_logger = structlog.get_logger("admin")
+security_logger = logging.getLogger("security")
+auth_logger = logging.getLogger("auth")
+admin_logger = logging.getLogger("admin")
+
 
 class SecurityLogger:
-
     @staticmethod
     def log_login_attempt(
-        request,
+        request: Request,
         email: str,
         success: bool,
-        user_id: Optional[int] = None,
-        failure_reason: Optional[str] = None,
-        additional_data: Optional[Dict[str, Any]] = None
+        user_id: int | None = None,
+        failure_reason: str | None = None,
+        additional_data: dict[str, object] | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "login_attempt",
             "email": email,
             "success": success,
@@ -57,20 +53,24 @@ class SecurityLogger:
         if additional_data:
             log_data.update(additional_data)
 
+        message = (
+            f"Login {'successful' if success else 'failed'}: {json.dumps(log_data)}"
+        )
+
         if success:
-            auth_logger.info("Login successful", **log_data)
+            auth_logger.info(message)
         else:
-            auth_logger.warning("Login failed", **log_data)
+            auth_logger.warning(message)
 
     @staticmethod
     def log_registration(
-        request,
+        request: Request,
         email: str,
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
         success: bool = True,
-        failure_reason: Optional[str] = None
+        failure_reason: str | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "user_registration",
             "email": email,
             "success": success,
@@ -84,20 +84,22 @@ class SecurityLogger:
         if failure_reason:
             log_data["failure_reason"] = failure_reason
 
+        message = f"Registration {'successful' if success else 'failed'}: {json.dumps(log_data)}"
+
         if success:
-            auth_logger.info("Registration successful", **log_data)
+            auth_logger.info(message)
         else:
-            auth_logger.warning("Registration failed", **log_data)
+            auth_logger.warning(message)
 
     @staticmethod
     def log_password_reset(
-        request,
+        request: Request,
         email: str,
         step: str,
-        user_id: Optional[int] = None,
-        additional_data: Optional[Dict[str, Any]] = None
+        user_id: int | None = None,
+        additional_data: dict[str, object] | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "password_reset",
             "step": step,
             "email": email,
@@ -111,21 +113,23 @@ class SecurityLogger:
         if additional_data:
             log_data.update(additional_data)
 
+        message = f"Password reset {step}: {json.dumps(log_data)}"
+
         if step == "failed":
-            auth_logger.warning("Password reset failed", **log_data)
+            auth_logger.warning(message)
         else:
-            auth_logger.info(f"Password reset {step}", **log_data)
+            auth_logger.info(message)
 
     @staticmethod
     def log_email_change(
-        request,
+        request: Request,
         user_id: int,
         old_email: str,
         new_email: str,
         step: str,
-        additional_data: Optional[Dict[str, Any]] = None
+        additional_data: dict[str, object] | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "email_change",
             "step": step,
             "user_id": user_id,
@@ -139,17 +143,18 @@ class SecurityLogger:
         if additional_data:
             log_data.update(additional_data)
 
-        security_logger.info(f"Email change {step}", **log_data)
+        message = f"Email change {step}: {json.dumps(log_data)}"
+        security_logger.info(message)
 
     @staticmethod
     def log_suspicious_activity(
-        request,
+        request: Request,
         activity_type: str,
-        user_id: Optional[int] = None,
-        email: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
+        user_id: int | None = None,
+        email: str | None = None,
+        details: dict[str, object] | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "suspicious_activity",
             "activity_type": activity_type,
             "ip_address": get_client_ip(request),
@@ -164,17 +169,18 @@ class SecurityLogger:
         if details:
             log_data.update(details)
 
-        security_logger.warning("Suspicious activity detected", **log_data)
+        message = f"Suspicious activity detected: {json.dumps(log_data)}"
+        security_logger.warning(message)
 
     @staticmethod
     def log_admin_action(
-        request,
+        request: Request,
         admin_user_id: int,
         action: str,
-        target_user_id: Optional[int] = None,
-        details: Optional[Dict[str, Any]] = None
+        target_user_id: int | None = None,
+        details: dict[str, object] | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "admin_action",
             "admin_user_id": admin_user_id,
             "action": action,
@@ -188,16 +194,17 @@ class SecurityLogger:
         if details:
             log_data.update(details)
 
-        admin_logger.info(f"Admin action: {action}", **log_data)
+        message = f"Admin action - {action}: {json.dumps(log_data)}"
+        admin_logger.info(message)
 
     @staticmethod
     def log_rate_limit_exceeded(
-        request,
+        request: Request,
         limit_type: str,
-        user_id: Optional[int] = None,
-        details: Optional[Dict[str, Any]] = None
+        user_id: int | None = None,
+        details: dict[str, object] | None = None,
     ):
-        log_data = {
+        log_data: dict[str, object] = {
             "event_type": "rate_limit_exceeded",
             "limit_type": limit_type,
             "ip_address": get_client_ip(request),
@@ -210,21 +217,22 @@ class SecurityLogger:
         if details is not None:
             log_data.update(details)
 
-        security_logger.warning("Rate limit exceeded", **log_data)
+        message = f"Rate limit exceeded: {json.dumps(log_data)}"
+        security_logger.warning(message)
+
 
 class SimpleRateLimiter:
-
     def __init__(self):
-        self._attempts = {}
-        self._lockouts = {}
+        self._attempts: dict[str, list[tuple[float, int]]] = {}
+        self._lockouts: dict[str, float] = {}
 
     def check_and_record_attempt(
         self,
         key: str,
         max_attempts: int = 5,
         window_seconds: int = 300,
-        lockout_seconds: int = 900
-    ) -> Dict[str, Any]:
+        lockout_seconds: int = 900,
+    ) -> dict[str, object]:
         import time
 
         now = time.time()
@@ -234,19 +242,20 @@ class SimpleRateLimiter:
                 return {
                     "allowed": False,
                     "reason": "locked_out",
-                    "retry_after": int(self._lockouts[key] - now)
+                    "retry_after": int(self._lockouts[key] - now),
                 }
             else:
                 del self._lockouts[key]
 
         if key in self._attempts:
             self._attempts[key] = [
-                (timestamp, count) for timestamp, count in self._attempts[key]
+                (timestamp, count)
+                for timestamp, count in self._attempts[key]
                 if now - timestamp < window_seconds
             ]
 
         current_attempts = sum(
-            count for timestamp, count in self._attempts.get(key, [])
+            count for _timestamp, count in self._attempts.get(key, [])
         )
 
         if current_attempts >= max_attempts:
@@ -255,7 +264,7 @@ class SimpleRateLimiter:
                 "allowed": False,
                 "reason": "too_many_attempts",
                 "attempts": current_attempts,
-                "retry_after": lockout_seconds
+                "retry_after": lockout_seconds,
             }
 
         if key not in self._attempts:
@@ -265,7 +274,23 @@ class SimpleRateLimiter:
         return {
             "allowed": True,
             "attempts": current_attempts + 1,
-            "remaining": max_attempts - current_attempts - 1
+            "remaining": max_attempts - current_attempts - 1,
         }
+
+    def clear_ip_limits(self, ip_address: str) -> int:
+        keys_to_clear = [k for k in self._attempts.keys() if ip_address in k]
+        lockouts_to_clear = [k for k in self._lockouts.keys() if ip_address in k]
+
+        for key in keys_to_clear:
+            del self._attempts[key]
+        for key in lockouts_to_clear:
+            del self._lockouts[key]
+
+        return len(keys_to_clear) + len(lockouts_to_clear)
+
+    def clear_all_limits(self) -> None:
+        self._attempts.clear()
+        self._lockouts.clear()
+
 
 rate_limiter = SimpleRateLimiter()

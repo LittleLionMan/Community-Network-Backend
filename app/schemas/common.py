@@ -1,18 +1,17 @@
 from pydantic import BaseModel
-from typing import List, Optional, Any
 from datetime import datetime
 
 class ErrorResponse(BaseModel):
     error: str
-    detail: Optional[str] = None
+    detail: str | None = None
     timestamp: datetime
 
 class ValidationErrorDetail(BaseModel):
     field: str
     message: str
-    invalid_value: Optional[Any] = None
+    invalid_value: object | None = None
 
 class ValidationErrorResponse(BaseModel):
     error: str = "Validation Error"
-    details: List[ValidationErrorDetail]
+    details: list[ValidationErrorDetail]
     timestamp: datetime

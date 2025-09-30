@@ -1,32 +1,32 @@
 from pydantic import BaseModel, Field, field_validator, ConfigDict, model_validator
-from typing import Optional, Self
+from typing import Self
 from datetime import datetime, timezone
 from .user import UserSummary
 from ..models.enums import ParticipationStatus
 
 class EventCategoryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
+    description: str | None = Field(None, max_length=500)
 
 class EventCategoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes = True)
+
     id: int
     name: str
-    description: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes = True)
+    description: str | None = None
 
 class EventCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
     description: str = Field(..., min_length=1, max_length=2000)
     start_datetime: datetime
-    end_datetime: Optional[datetime] = None
-    location: Optional[str] = Field(None, max_length=300)
-    max_participants: Optional[int] = Field(None, gt=0)
-    category_id: int
+    end_datetime: datetime | None = None
+    location: str | None = Field(None, max_length=300)
+    max_participants: int | None = Field(None, gt=0)
+    category_id: int | None = None
 
     @field_validator('start_datetime')
     @classmethod
-    def validate_start_datetime(cls, v):
+    def validate_start_datetime(cls, v: datetime) -> datetime:
         now = datetime.now(timezone.utc)
 
         if v.tzinfo is None:
@@ -55,34 +55,37 @@ class EventCreate(BaseModel):
         return self
 
 class EventUpdate(BaseModel):
-    title: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, min_length=1, max_length=2000)
-    start_datetime: Optional[datetime] = None
-    end_datetime: Optional[datetime] = None
-    location: Optional[str] = Field(None, max_length=300)
-    max_participants: Optional[int] = Field(None, gt=0)
-    category_id: Optional[int] = None
-    is_active: Optional[bool] = None
+    title: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, min_length=1, max_length=2000)
+    start_datetime: datetime | None = None
+    end_datetime: datetime | None = None
+    location: str | None = Field(None, max_length=300)
+    max_participants: int | None = Field(None, gt=0)
+    category_id: int | None = None
+    is_active: bool | None = None
 
 class EventSummary(BaseModel):
+    model_config = ConfigDict(from_attributes = True)
+
     id: int
     title: str
     start_datetime: datetime
-    location: Optional[str] = None
+    location: str | None = None
     creator: UserSummary
-    category: EventCategoryRead
+    category: EventCategoryRead | None = None
     participant_count: int = 0
 
-    model_config = ConfigDict(from_attributes = True)
 
 class EventRead(BaseModel):
+    model_config = ConfigDict(from_attributes = True)
+
     id: int
     title: str
     description: str
     start_datetime: datetime
-    end_datetime: Optional[datetime] = None
-    location: Optional[str] = None
-    max_participants: Optional[int] = None
+    end_datetime: datetime | None = None
+    location: str | None = None
+    max_participants: int | None = None
     is_active: bool
     created_at: datetime
     creator: UserSummary
@@ -90,7 +93,6 @@ class EventRead(BaseModel):
     participant_count: int = 0
     is_full: bool = False
 
-    model_config = ConfigDict(from_attributes = True)
 
 class EventParticipationCreate(BaseModel):
     event_id: int
@@ -99,11 +101,11 @@ class EventParticipationUpdate(BaseModel):
     status: ParticipationStatus
 
 class EventParticipationRead(BaseModel):
+    model_config = ConfigDict(from_attributes = True)
+
     id: int
     status: ParticipationStatus
     registered_at: datetime
     status_updated_at: datetime
     user: UserSummary
     event_id: int
-
-    model_config = ConfigDict(from_attributes = True)

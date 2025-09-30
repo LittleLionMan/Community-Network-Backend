@@ -1,11 +1,11 @@
+from __future__ import annotations
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List
 from datetime import datetime
 from .user import UserSummary
 
 class MessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
-    reply_to_id: Optional[int] = None
+    reply_to_id: int | None = None
 
 class MessageUpdate(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
@@ -15,106 +15,105 @@ class ConversationCreate(BaseModel):
     initial_message: str = Field(..., min_length=1, max_length=2000)
 
 class MessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     conversation_id: int
     sender: UserSummary
     content: str
     message_type: str
     created_at: datetime
-    edited_at: Optional[datetime] = None
+    edited_at: datetime | None = None
     is_edited: bool
     is_deleted: bool
-    reply_to_id: Optional[int] = None
-    reply_to: Optional["MessageResponse"] = None
+    reply_to_id: int | None = None
+    reply_to: MessageResponse | None = None
     is_read: bool = False
 
+class ConversationParticipantResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-class ConversationParticipantResponse(BaseModel):
     user: UserSummary
     joined_at: datetime
-    last_read_at: Optional[datetime] = None
+    last_read_at: datetime | None = None
     is_muted: bool
     is_archived: bool
 
+class ConversationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-class ConversationResponse(BaseModel):
     id: int
-    participants: List[ConversationParticipantResponse]
-    last_message: Optional[MessageResponse] = None
-    last_message_at: Optional[datetime] = None
+    participants: list[ConversationParticipantResponse]
+    last_message: MessageResponse | None = None
+    last_message_at: datetime | None = None
     unread_count: int = 0
     created_at: datetime
     updated_at: datetime
 
+class ConversationDetailResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-class ConversationDetailResponse(BaseModel):
     id: int
-    participants: List[ConversationParticipantResponse]
-    messages: List[MessageResponse]
+    participants: list[ConversationParticipantResponse]
+    messages: list[MessageResponse]
     unread_count: int = 0
     created_at: datetime
     updated_at: datetime
     has_more: bool = False
 
+class MessageListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-class MessageListResponse(BaseModel):
-    messages: List[MessageResponse]
+    messages: list[MessageResponse]
     total: int
     page: int
     size: int
     has_more: bool
-
-    model_config = ConfigDict(from_attributes=True)
 
 class ConversationListResponse(BaseModel):
-    conversations: List[ConversationResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+    conversations: list[ConversationResponse]
     total: int
     page: int
     size: int
     has_more: bool
 
+class MessageModerationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-class MessageModerationResponse(BaseModel):
     id: int
     conversation_id: int
     sender: UserSummary
     content: str
     created_at: datetime
     is_flagged: bool
-    moderation_status: Optional[str] = None
-    moderation_reason: Optional[str] = None
-    moderated_at: Optional[datetime] = None
-
-    model_config = ConfigDict(from_attributes=True)
+    moderation_status: str | None = None
+    moderation_reason: str | None = None
+    moderated_at: datetime | None = None
 
 class MessageModerationAction(BaseModel):
     action: str = Field(..., pattern="^(approve|reject|flag)$")
-    reason: Optional[str] = Field(None, max_length=500)
+    reason: str | None = Field(None, max_length=500)
 
 class ConversationSettings(BaseModel):
-    is_muted: Optional[bool] = None
-    is_archived: Optional[bool] = None
+    is_muted: bool | None = None
+    is_archived: bool | None = None
 
 class MessagePrivacySettings(BaseModel):
-    messages_enabled: Optional[bool] = None
-    messages_from_strangers: Optional[bool] = None
-    messages_notifications: Optional[bool] = None
+    messages_enabled: bool | None = None
+    messages_from_strangers: bool | None = None
+    messages_notifications: bool | None = None
 
 class UnreadCountResponse(BaseModel):
     total_unread: int
-    conversations: List[dict]
+    conversations: list[dict[str, object]]
 
 class WebSocketMessageEvent(BaseModel):
-    """Schema for WebSocket message events"""
     type: str
     conversation_id: int
-    message: Optional[MessageResponse] = None
-    user_id: Optional[int] = None
-    data: Optional[dict] = None
+    message: MessageResponse | None = None
+    user_id: int | None = None
+    data: dict[str, object] | None = None
 
-MessageResponse.model_rebuild()
+_ = MessageResponse.model_rebuild()

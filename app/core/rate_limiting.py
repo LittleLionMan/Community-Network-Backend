@@ -1,35 +1,35 @@
 import time
 import redis.asyncio as redis
-from typing import Dict, Optional, Any
+from typing import cast
 from fastapi import Request
 import hashlib
 
 class AdvancedRateLimiter:
     def __init__(self, redis_client: redis.Redis):
-        self.redis = redis_client
-        self.local_cache: Dict[str, Dict] = {}  # Fallback for Redis unavailable
-        self.cache_ttl = 60  # 1 minute local cache
+        self.redis: redis.Redis = redis_client
+        self.local_cache: dict[str, dict[str, object]] = {}
+        self.cache_ttl: int = 60
 
     async def check_rate_limit(
         self,
         identifier: str,
         limit: int,
         window: int = 60,
-        burst_limit: Optional[int] = None
-    ) -> Dict[str, Any]:
+        burst_limit: int | None = None
+    ) -> dict[str, object]:
         current_time = time.time()
         key = f"rate_limit:{identifier}:{window}"
 
         try:
             pipe = self.redis.pipeline()
-            pipe.get(key)
-            pipe.ttl(key)
+            _ = pipe.get(key)
+            _ = pipe.ttl(key)
             redis_result = await pipe.execute()
 
             current_count = int(redis_result[0] or 0)
-            ttl = redis_result[1]
+            ttl = cast(int, redis_result[1])
 
-            if ttl == -1:  # Key exists but no TTL
+            if ttl == -1:
                 await self.redis.expire(key, window)
                 ttl = window
 
@@ -71,19 +71,21 @@ class AdvancedRateLimiter:
         limit: int,
         window: int,
         current_time: float
-    ) -> Dict[str, Any]:
+    ) -> dict[str, object]:
         key = f"{identifier}:{window}"
 
         if key not in self.local_cache:
             self.local_cache[key] = {'count': 0, 'reset_time': current_time + window}
 
         cache_entry = self.local_cache[key]
+        reset_time = cast(float, cache_entry['reset_time'])
+        count = cast(int, cache_entry['count'])
 
-        if current_time >= cache_entry['reset_time']:
+        if current_time >= reset_time:
             cache_entry['count'] = 0
             cache_entry['reset_time'] = current_time + window
 
-        if cache_entry['count'] >= limit:
+        if count >= limit:
             return {
                 'allowed': False,
                 'remaining': 0,
@@ -91,16 +93,16 @@ class AdvancedRateLimiter:
                 'reason': 'rate_limit_exceeded_local'
             }
 
-        cache_entry['count'] += 1
+        count += 1
 
         return {
             'allowed': True,
-            'remaining': limit - cache_entry['count'],
-            'reset_time': cache_entry['reset_time'],
+            'remaining': limit - count,
+            'reset_time': reset_time,
             'reason': 'allowed_local'
         }
 
-    def get_identifier(self, request: Request, user_id: Optional[int] = None) -> str:
+    def get_identifier(self, request: Request, user_id: int | None = None) -> str:
         if user_id:
             return f"user:{user_id}"
 

@@ -1,37 +1,47 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
-from typing import List, Optional
+from typing import Annotated
 
 from app.database import get_db
 from app.models.forum import ForumThread, ForumPost, ForumCategory
 from app.models.user import User
 from app.schemas.forum import (
-    ForumThreadCreate, ForumThreadRead, ForumThreadUpdate,
-    ForumPostCreate, ForumPostRead, ForumPostUpdate
+    ForumThreadCreate,
+    ForumThreadRead,
+    ForumThreadUpdate,
+    ForumPostCreate,
+    ForumPostRead,
+    ForumPostUpdate,
 )
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_current_admin_user, get_moderation_service
-from app.core.rate_limit_decorator import forum_post_rate_limit, forum_reply_rate_limit, read_rate_limit
+from app.core.dependencies import get_current_user, get_moderation_service
+from app.core.rate_limit_decorator import (
+    forum_post_rate_limit,
+    forum_reply_rate_limit,
+    read_rate_limit,
+)
 from app.services.moderation_service import ModerationService
 
 router = APIRouter()
 
+
 @router.get(
     "/",
-    response_model=List[ForumThreadRead],
+    response_model=list[ForumThreadRead],
     summary="Get all forum threads",
-    description="Public endpoint to retrieve all threads with pagination"
+    description="Public endpoint to retrieve all threads with pagination",
 )
 @read_rate_limit("forum_listing")
 async def get_threads(
-    request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    category_id: Optional[int] = Query(None, description="Filter by category"),
-    pinned_first: bool = Query(True, description="Show pinned threads first"),
-    db: AsyncSession = Depends(get_db)
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    category_id: Annotated[int | None, Query(description="Filter by category")] = None,
+    pinned_first: Annotated[
+        bool, Query(description="Show pinned threads first")
+    ] = True,
 ):
     query = select(ForumThread)
 
@@ -40,16 +50,14 @@ async def get_threads(
 
     if pinned_first:
         query = query.order_by(
-            ForumThread.is_pinned.desc(),
-            ForumThread.created_at.desc()
+            ForumThread.is_pinned.desc(), ForumThread.created_at.desc()
         )
     else:
         query = query.order_by(ForumThread.created_at.desc())
 
     query = query.offset(skip).limit(limit)
     query = query.options(
-        selectinload(ForumThread.creator),
-        selectinload(ForumThread.category)  # Load category info
+        selectinload(ForumThread.creator), selectinload(ForumThread.category)
     )
 
     result = await db.execute(query)
@@ -57,17 +65,20 @@ async def get_threads(
 
     return [ForumThreadRead.model_validate(thread) for thread in threads]
 
+
 @router.get(
     "/category/{category_id}",
-    response_model=List[ForumThreadRead],
-    summary="Get threads in specific category"
+    response_model=list[ForumThreadRead],
+    summary="Get threads in specific category",
 )
 async def get_threads_in_category(
+    db: Annotated[AsyncSession, Depends(get_db)],
     category_id: int,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    pinned_first: bool = Query(True, description="Show pinned threads first"),
-    db: AsyncSession = Depends(get_db)
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    pinned_first: Annotated[
+        bool, Query(description="Show pinned threads first")
+    ] = True,
 ):
     result = await db.execute(
         select(ForumCategory).where(ForumCategory.id == category_id)
@@ -76,24 +87,21 @@ async def get_threads_in_category(
 
     if not category:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
         )
 
     query = select(ForumThread).where(ForumThread.category_id == category_id)
 
     if pinned_first:
         query = query.order_by(
-            ForumThread.is_pinned.desc(),
-            ForumThread.created_at.desc()
+            ForumThread.is_pinned.desc(), ForumThread.created_at.desc()
         )
     else:
         query = query.order_by(ForumThread.created_at.desc())
 
     query = query.offset(skip).limit(limit)
     query = query.options(
-        selectinload(ForumThread.creator),
-        selectinload(ForumThread.category)
+        selectinload(ForumThread.creator), selectinload(ForumThread.category)
     )
 
     result = await db.execute(query)
@@ -101,22 +109,17 @@ async def get_threads_in_category(
 
     return [ForumThreadRead.model_validate(thread) for thread in threads]
 
+
 @router.get(
     "/{thread_id}",
     response_model=ForumThreadRead,
-    responses={
-        404: {"model": ErrorResponse, "description": "Thread not found"}
-    }
+    responses={404: {"model": ErrorResponse, "description": "Thread not found"}},
 )
-async def get_thread(
-    thread_id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    query = select(ForumThread).where(
-        ForumThread.id == thread_id
-    ).options(
-        selectinload(ForumThread.creator),
-        selectinload(ForumThread.category)
+async def get_thread(thread_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+    query = (
+        select(ForumThread)
+        .where(ForumThread.id == thread_id)
+        .options(selectinload(ForumThread.creator), selectinload(ForumThread.category))
     )
 
     result = await db.execute(query)
@@ -124,35 +127,36 @@ async def get_thread(
 
     if not thread:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
     return ForumThreadRead.model_validate(thread)
+
 
 @router.post(
     "/",
     response_model=ForumThreadRead,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid thread data or title flagged"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid thread data or title flagged",
+        },
         401: {"model": ErrorResponse, "description": "Authentication required"},
-        404: {"model": ErrorResponse, "description": "Category not found"}
-    }
+        404: {"model": ErrorResponse, "description": "Category not found"},
+    },
 )
 @forum_post_rate_limit
 async def create_thread(
-    request:Request,
     thread_data: ForumThreadCreate,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    moderation_service: ModerationService = Depends(get_moderation_service),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    moderation_service: Annotated[ModerationService, Depends(get_moderation_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     result = await db.execute(
         select(ForumCategory).where(
-            ForumCategory.id == thread_data.category_id,
-            ForumCategory.is_active == True
+            ForumCategory.id == thread_data.category_id, ForumCategory.is_active
         )
     )
     category = result.scalar_one_or_none()
@@ -160,15 +164,15 @@ async def create_thread(
     if not category:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found or inactive"
+            detail="Category not found or inactive",
         )
 
     moderation_result = moderation_service.check_content(thread_data.title)
 
-    if moderation_result['is_flagged']:
+    if moderation_result["is_flagged"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Thread title flagged: {', '.join(moderation_result['reasons'])}"
+            detail=f"Thread title flagged: {', '.join(moderation_result['reasons'])}",
         )
 
     thread_dict = thread_data.model_dump()
@@ -179,15 +183,13 @@ async def create_thread(
     await db.commit()
     await db.refresh(db_thread, ["creator", "category"])
 
-    if moderation_result['requires_review']:
+    if moderation_result["requires_review"]:
         background_tasks.add_task(
-            _check_user_moderation_status,
-            db,
-            current_user.id,
-            moderation_service
+            _check_user_moderation_status, current_user.id, moderation_service
         )
 
     return ForumThreadRead.model_validate(db_thread)
+
 
 @router.put(
     "/{thread_id}",
@@ -195,45 +197,44 @@ async def create_thread(
     responses={
         400: {"model": ErrorResponse, "description": "Invalid thread data"},
         401: {"model": ErrorResponse, "description": "Authentication required"},
-        403: {"model": ErrorResponse, "description": "Not authorized to edit this thread"},
-        404: {"model": ErrorResponse, "description": "Thread not found"}
-    }
+        403: {
+            "model": ErrorResponse,
+            "description": "Not authorized to edit this thread",
+        },
+        404: {"model": ErrorResponse, "description": "Thread not found"},
+    },
 )
 async def update_thread(
     thread_id: int,
     thread_data: ForumThreadUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(ForumThread).where(ForumThread.id == thread_id)
-    )
+    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
     thread = result.scalar_one_or_none()
 
     if not thread:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
     if thread.creator_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this thread"
+            detail="Not authorized to edit this thread",
         )
 
     if not current_user.is_admin:
         if thread_data.is_pinned is not None or thread_data.is_locked is not None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only admins can pin/lock threads"
+                detail="Only admins can pin/lock threads",
             )
 
     if thread_data.category_id and thread_data.category_id != thread.category_id:
         result = await db.execute(
             select(ForumCategory).where(
-                ForumCategory.id == thread_data.category_id,
-                ForumCategory.is_active == True
+                ForumCategory.id == thread_data.category_id, ForumCategory.is_active
             )
         )
         category = result.scalar_one_or_none()
@@ -241,10 +242,10 @@ async def update_thread(
         if not category:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="New category not found or inactive"
+                detail="New category not found or inactive",
             )
 
-    update_data = thread_data.model_dump(exclude_unset=True)
+    update_data: dict[str, object] = thread_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(thread, field, value)
 
@@ -253,120 +254,117 @@ async def update_thread(
 
     return ForumThreadRead.model_validate(thread)
 
+
 @router.delete(
     "/{thread_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         401: {"model": ErrorResponse, "description": "Authentication required"},
-        403: {"model": ErrorResponse, "description": "Not authorized to delete this thread"},
-        404: {"model": ErrorResponse, "description": "Thread not found"}
-    }
+        403: {
+            "model": ErrorResponse,
+            "description": "Not authorized to delete this thread",
+        },
+        404: {"model": ErrorResponse, "description": "Thread not found"},
+    },
 )
 async def delete_thread(
     thread_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(ForumThread).where(ForumThread.id == thread_id)
-    )
+    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
     thread = result.scalar_one_or_none()
 
     if not thread:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
     if thread.creator_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this thread"
+            detail="Not authorized to delete this thread",
         )
 
-    await db.execute(
-        delete(ForumThread).where(ForumThread.id == thread_id)
-    )
+    _ = await db.execute(delete(ForumThread).where(ForumThread.id == thread_id))
     await db.commit()
+
 
 @router.get(
     "/{thread_id}/posts",
-    response_model=List[ForumPostRead],
-    responses={
-        404: {"model": ErrorResponse, "description": "Thread not found"}
-    }
+    response_model=list[ForumPostRead],
+    responses={404: {"model": ErrorResponse, "description": "Thread not found"}},
 )
 async def get_thread_posts(
     thread_id: int,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
-    result = await db.execute(
-        select(ForumThread).where(ForumThread.id == thread_id)
-    )
+    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
     thread = result.scalar_one_or_none()
 
     if not thread:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
-    query = select(ForumPost).where(
-        ForumPost.thread_id == thread_id
-    ).options(
-        selectinload(ForumPost.author)
-    ).order_by(ForumPost.created_at.asc()).offset(skip).limit(limit)
+    query = (
+        select(ForumPost)
+        .where(ForumPost.thread_id == thread_id)
+        .options(selectinload(ForumPost.author))
+        .order_by(ForumPost.created_at.asc())
+        .offset(skip)
+        .limit(limit)
+    )
 
     result = await db.execute(query)
     posts = result.scalars().all()
 
     return [ForumPostRead.model_validate(post) for post in posts]
 
+
 @router.post(
     "/{thread_id}/posts",
     response_model=ForumPostRead,
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"model": ErrorResponse, "description": "Thread is locked, invalid data, or content flagged"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Thread is locked, invalid data, or content flagged",
+        },
         401: {"model": ErrorResponse, "description": "Authentication required"},
-        404: {"model": ErrorResponse, "description": "Thread not found"}
-    }
+        404: {"model": ErrorResponse, "description": "Thread not found"},
+    },
 )
 @forum_reply_rate_limit
 async def create_post(
-    request: Request,
     thread_id: int,
     post_data: ForumPostCreate,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    moderation_service: ModerationService = Depends(get_moderation_service),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    moderation_service: Annotated[ModerationService, Depends(get_moderation_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     moderation_result = moderation_service.check_content(post_data.content)
 
-    if moderation_result['is_flagged']:
+    if moderation_result["is_flagged"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Post content flagged: {', '.join(moderation_result['reasons'])}"
+            detail=f"Post content flagged: {', '.join(moderation_result['reasons'])}",
         )
 
-    result = await db.execute(
-        select(ForumThread).where(ForumThread.id == thread_id)
-    )
+    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
     thread = result.scalar_one_or_none()
 
     if not thread:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Thread not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
     if thread.is_locked and not current_user.is_admin:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Thread is locked"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Thread is locked"
         )
 
     post_dict = post_data.model_dump()
@@ -378,43 +376,38 @@ async def create_post(
     await db.commit()
     await db.refresh(db_post, ["author"])
 
-    if moderation_result['requires_review']:
+    if moderation_result["requires_review"]:
         background_tasks.add_task(
-            _check_user_moderation_status,
-            db,
-            current_user.id,
-            moderation_service
+            _check_user_moderation_status, current_user.id, moderation_service
         )
 
     return ForumPostRead.model_validate(db_post)
 
-# Rest of the endpoints stay the same...
+
 @router.put("/posts/{post_id}", response_model=ForumPostRead)
 async def update_post(
     post_id: int,
     post_data: ForumPostUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(ForumPost).where(ForumPost.id == post_id)
-    )
+    result = await db.execute(select(ForumPost).where(ForumPost.id == post_id))
     post = result.scalar_one_or_none()
 
     if not post:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Post not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Post not found"
         )
 
     if post.author_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this post"
+            detail="Not authorized to edit this post",
         )
 
     post.content = post_data.content
     from datetime import datetime
+
     post.updated_at = datetime.now()
 
     await db.commit()
@@ -422,80 +415,82 @@ async def update_post(
 
     return ForumPostRead.model_validate(post)
 
+
 @router.delete("/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_post(
     post_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(ForumPost).where(ForumPost.id == post_id)
-    )
+    result = await db.execute(select(ForumPost).where(ForumPost.id == post_id))
     post = result.scalar_one_or_none()
 
     if not post:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Post not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Post not found"
         )
 
     if post.author_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this post"
+            detail="Not authorized to delete this post",
         )
 
-    await db.execute(
-        delete(ForumPost).where(ForumPost.id == post_id)
-    )
+    _ = await db.execute(delete(ForumPost).where(ForumPost.id == post_id))
     await db.commit()
 
-@router.get("/my/threads", response_model=List[ForumThreadRead])
+
+@router.get("/my/threads", response_model=list[ForumThreadRead])
 async def get_my_threads(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
-    query = select(ForumThread).where(
-        ForumThread.creator_id == current_user.id
-    ).options(
-        selectinload(ForumThread.creator),
-        selectinload(ForumThread.category)
-    ).order_by(ForumThread.created_at.desc()).offset(skip).limit(limit)
+    query = (
+        select(ForumThread)
+        .where(ForumThread.creator_id == current_user.id)
+        .options(selectinload(ForumThread.creator), selectinload(ForumThread.category))
+        .order_by(ForumThread.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
 
     result = await db.execute(query)
     threads = result.scalars().all()
 
     return [ForumThreadRead.model_validate(thread) for thread in threads]
 
-@router.get("/my/posts", response_model=List[ForumPostRead])
+
+@router.get("/my/posts", response_model=list[ForumPostRead])
 async def get_my_posts(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
-    query = select(ForumPost).where(
-        ForumPost.author_id == current_user.id
-    ).options(
-        selectinload(ForumPost.author)
-    ).order_by(ForumPost.created_at.desc()).offset(skip).limit(limit)
+    query = (
+        select(ForumPost)
+        .where(ForumPost.author_id == current_user.id)
+        .options(selectinload(ForumPost.author))
+        .order_by(ForumPost.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
 
     result = await db.execute(query)
     posts = result.scalars().all()
 
     return [ForumPostRead.model_validate(post) for post in posts]
 
+
 async def _check_user_moderation_status(
-    db: AsyncSession,
-    user_id: int,
-    moderation_service: ModerationService
+    user_id: int, moderation_service: ModerationService
 ):
     try:
         analysis = await moderation_service.moderate_user_content(user_id)
 
-        if analysis['needs_admin_review']:
+        if analysis["needs_admin_review"]:
             print(f"🚨 User {user_id} flagged for admin review:")
             print(f"   - Flagged items: {analysis['flagged_items']}")
             print(f"   - Risk score: {analysis['average_risk_score']:.2f}")
@@ -503,35 +498,41 @@ async def _check_user_moderation_status(
     except Exception as e:
         print(f"⚠️ Background moderation check failed for user {user_id}: {e}")
 
+
 @router.get("/admin/flagged-content")
 async def get_flagged_content(
-    limit: int = Query(20, ge=1, le=100),
-    current_admin: User = Depends(get_current_admin_user),
-    moderation_service: ModerationService = Depends(get_moderation_service),
-    db: AsyncSession = Depends(get_db)
-):
+    moderation_service: Annotated[ModerationService, Depends(get_moderation_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict[str, object]:
     recent_posts = await db.execute(
-        select(ForumPost).options(selectinload(ForumPost.author))
-        .order_by(ForumPost.created_at.desc()).limit(100)
+        select(ForumPost)
+        .options(selectinload(ForumPost.author))
+        .order_by(ForumPost.created_at.desc())
+        .limit(100)
     )
     posts = recent_posts.scalars().all()
 
     flagged_posts = []
     for post in posts:
         moderation_result = moderation_service.check_content(post.content)
-        if moderation_result['requires_review']:
-            flagged_posts.append({
-                'post_id': post.id,
-                'thread_id': post.thread_id,
-                'author': post.author.display_name,
-                'content_preview': post.content[:200] + "..." if len(post.content) > 200 else post.content,
-                'created_at': post.created_at,
-                'moderation': moderation_result
-            })
+        if moderation_result["requires_review"]:
+            flagged_posts.append(
+                {
+                    "post_id": post.id,
+                    "thread_id": post.thread_id,
+                    "author": post.author.display_name,
+                    "content_preview": post.content[:200] + "..."
+                    if len(post.content) > 200
+                    else post.content,
+                    "created_at": post.created_at,
+                    "moderation": moderation_result,
+                }
+            )
 
-    flagged_posts.sort(key=lambda x: x['moderation']['confidence'], reverse=True)
+    flagged_posts.sort(
+        key=lambda x: x["moderation"]["confidence"],  # type: ignore[arg-type]
+        reverse=True,
+    )
 
-    return {
-        'flagged_posts': flagged_posts[:limit],
-        'total_flagged': len(flagged_posts)
-    }
+    return {"flagged_posts": flagged_posts[:limit], "total_flagged": len(flagged_posts)}

@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from fastapi import HTTPException, status
@@ -11,11 +10,10 @@ from ..core.auth import (
     hash_token, send_email, generate_verification_email, generate_password_reset_email,
     ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
 )
-import logging
-
-logger = logging.getLogger(__name__)
 
 class AuthService:
+    db: AsyncSession
+
     def __init__(self, db: AsyncSession):
         self.db = db
 
@@ -59,7 +57,7 @@ class AuthService:
 
         return db_user
 
-    async def authenticate_user(self, email: str, password: str) -> Optional[User]:
+    async def authenticate_user(self, email: str, password: str) -> User | None:
         result = await self.db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
 
@@ -84,8 +82,6 @@ class AuthService:
         self.db.add(db_refresh_token)
         await self.db.commit()
 
-        logger.info(f"Created new token pair for user {user.id}")
-
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -105,7 +101,6 @@ class AuthService:
         db_refresh_token = result.scalar_one_or_none()
 
         if not db_refresh_token:
-            logger.warning(f"Invalid refresh token attempt: {refresh_token_hash[:16]}...")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
@@ -115,13 +110,12 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if not user or not user.is_active:
-            logger.warning(f"Refresh token for inactive user: {db_refresh_token.user_id}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive"
             )
 
-        await self.db.execute(
+        _ = await self.db.execute(
             update(RefreshToken)
             .where(RefreshToken.id == db_refresh_token.id)
             .values(is_revoked=True)
@@ -131,12 +125,10 @@ class AuthService:
             new_tokens = await self.create_tokens(user)
             await self.db.commit()
 
-            logger.info(f"Successfully rotated refresh token for user {user.id}")
             return new_tokens
 
-        except Exception as e:
+        except Exception:
             await self.db.rollback()
-            logger.error(f"Token rotation failed for user {user.id}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Token refresh failed"
@@ -155,13 +147,12 @@ class AuthService:
         db_refresh_token = result.scalar_one_or_none()
 
         if db_refresh_token:
-            await self.db.execute(
+            _ = await self.db.execute(
                 update(RefreshToken)
                 .where(RefreshToken.id == db_refresh_token.id)
                 .values(is_revoked=True)
             )
             await self.db.commit()
-            logger.info(f"Revoked refresh token for user {user_id}")
             return True
         return False
 
@@ -174,7 +165,6 @@ class AuthService:
         await self.db.commit()
 
         count = result.rowcount
-        logger.info(f"Revoked {count} refresh tokens for user {user_id}")
         return count
 
     async def cleanup_expired_tokens(self) -> int:
@@ -189,8 +179,6 @@ class AuthService:
         await self.db.commit()
 
         count = result.rowcount
-        if count > 0:
-            logger.info(f"Cleaned up {count} expired refresh tokens")
         return count
 
     async def verify_email(self, token: str) -> bool:
@@ -218,14 +206,13 @@ class AuthService:
             user.email_verified = True
             user.email_verified_at = datetime.now(timezone.utc)
 
-            await self.db.execute(
+            _ = await self.db.execute(
                 update(EmailVerificationToken)
                 .where(EmailVerificationToken.id == db_token.id)
                 .values(is_used=True)
             )
 
             await self.db.commit()
-            logger.info(f"Email verified for user {user.id}")
             return True
 
         return False
@@ -251,7 +238,6 @@ class AuthService:
         email_body = generate_password_reset_email(email, reset_token)
         send_email(email, "Passwort zurücksetzen", email_body, is_html=True)
 
-        logger.info(f"Password reset requested for user {user.id}")
         return True
 
     async def reset_password(self, token: str, new_password: str) -> bool:
@@ -278,16 +264,15 @@ class AuthService:
         if user:
             user.password_hash = get_password_hash(new_password)
 
-            await self.db.execute(
+            _ = await self.db.execute(
                 update(PasswordResetToken)
                 .where(PasswordResetToken.id == db_token.id)
                 .values(is_used=True)
             )
 
-            await self.revoke_all_user_tokens(user.id)
+            _ = await self.revoke_all_user_tokens(user.id)
             await self.db.commit()
 
-            logger.info(f"Password reset completed for user {user.id}")
             return True
 
         return False
@@ -304,7 +289,6 @@ class AuthService:
             await self.db.commit()
 
             await self._send_verification_email(user)
-            logger.info(f"Email updated for user {user.id}")
 
             return True
 
@@ -313,14 +297,13 @@ class AuthService:
             raise e
 
     async def delete_user_account(self, user: User) -> bool:
-        await self.revoke_all_user_tokens(user.id)
+        _ = await self.revoke_all_user_tokens(user.id)
 
         user.is_active = False
         user.email = f"deleted_{user.id}@deleted.local"
         user.display_name = f"deleted_user_{user.id}"
 
         await self.db.commit()
-        logger.info(f"User account deleted: {user.id}")
         return True
 
     async def _send_verification_email(self, user: User):
@@ -350,11 +333,9 @@ class AuthService:
 
             user.password_hash = get_password_hash(new_password)
 
-            await self.revoke_all_user_tokens(user_id)
+            _ = await self.revoke_all_user_tokens(user_id)
             await self.db.commit()
             await self.db.refresh(user)
-
-            logger.info(f"Password updated for user {user_id}")
             return True
 
         except Exception as e:

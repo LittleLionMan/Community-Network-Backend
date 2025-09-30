@@ -1,37 +1,48 @@
-from typing import Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc, delete
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timedelta
-import logging
 
-from ..models.message import Conversation, ConversationParticipant, Message, MessageReadReceipt
+from ..models.message import (
+    Conversation,
+    ConversationParticipant,
+    Message,
+    MessageReadReceipt,
+)
 from ..models.user import User
 from ..schemas.message import (
-    ConversationCreate, MessageCreate, MessageUpdate,
-    ConversationResponse, MessageResponse, ConversationDetailResponse,
-    MessageListResponse, ConversationListResponse, UnreadCountResponse,
-    ConversationParticipantResponse
+    ConversationCreate,
+    MessageCreate,
+    MessageUpdate,
+    ConversationResponse,
+    MessageResponse,
+    ConversationDetailResponse,
+    MessageListResponse,
+    ConversationListResponse,
+    UnreadCountResponse,
+    ConversationParticipantResponse,
 )
 from ..schemas.user import UserSummary
 from .moderation_service import ModerationService
 from .websocket_service import websocket_manager
 from ..core.auth import send_email, generate_new_message_notification_email
 
-logger = logging.getLogger(__name__)
 
 class MessageService:
+    db: AsyncSession
+    moderation_service: ModerationService
+
     def __init__(self, db: AsyncSession):
         self.db = db
         self.moderation_service = ModerationService(db)
 
-    async def can_user_message(self, sender_id: int, recipient_id: int) -> Tuple[bool, Optional[str]]:
+    async def can_user_message(
+        self, sender_id: int, recipient_id: int
+    ) -> tuple[bool, str | None]:
         if sender_id == recipient_id:
             return False, "Cannot message yourself"
 
-        result = await self.db.execute(
-            select(User).where(User.id == recipient_id)
-        )
+        result = await self.db.execute(select(User).where(User.id == recipient_id))
         recipient = result.scalar_one_or_none()
 
         if not recipient or not recipient.is_active:
@@ -41,20 +52,30 @@ class MessageService:
             return False, "User has disabled direct messages"
 
         if not recipient.messages_from_strangers:
-            existing_conversation = await self._get_conversation_between_users(sender_id, recipient_id)
+            existing_conversation = await self._get_conversation_between_users(
+                sender_id, recipient_id
+            )
             if not existing_conversation:
                 return False, "User only accepts messages from known contacts"
 
         return True, None
 
-    async def create_conversation(self, creator_id: int, data: ConversationCreate) -> ConversationResponse:
-        can_message, error = await self.can_user_message(creator_id, data.participant_id)
+    async def create_conversation(
+        self, creator_id: int, data: ConversationCreate
+    ) -> ConversationResponse:
+        can_message, error = await self.can_user_message(
+            creator_id, data.participant_id
+        )
         if not can_message:
             raise ValueError(error)
 
-        existing = await self._get_conversation_between_users(creator_id, data.participant_id)
+        existing = await self._get_conversation_between_users(
+            creator_id, data.participant_id
+        )
         if existing:
-            await self.send_message(creator_id, existing.id, MessageCreate(content=data.initial_message))
+            _ = await self.send_message(
+                creator_id, existing.id, MessageCreate(content=data.initial_message)
+            )
             conversations = await self.get_conversations(creator_id, 1, 1)
             for conv in conversations.conversations:
                 if conv.id == existing.id:
@@ -66,19 +87,19 @@ class MessageService:
         await self.db.flush()
 
         creator_participant = ConversationParticipant(
-            conversation_id=conversation.id,
-            user_id=creator_id
+            conversation_id=conversation.id, user_id=creator_id
         )
         recipient_participant = ConversationParticipant(
-            conversation_id=conversation.id,
-            user_id=data.participant_id
+            conversation_id=conversation.id, user_id=data.participant_id
         )
 
         self.db.add(creator_participant)
         self.db.add(recipient_participant)
         await self.db.flush()
 
-        await self.send_message(creator_id, conversation.id, MessageCreate(content=data.initial_message))
+        _ = await self.send_message(
+            creator_id, conversation.id, MessageCreate(content=data.initial_message)
+        )
         await self.db.commit()
 
         conversations = await self.get_conversations(creator_id, 1, 1)
@@ -88,8 +109,10 @@ class MessageService:
 
         raise ValueError("Failed to create conversation")
 
-    async def send_message(self, sender_id: int, conversation_id: int, data: MessageCreate) -> MessageResponse:
-        participant = await self._get_participant(conversation_id, sender_id)
+    async def send_message(
+        self, sender_id: int, conversation_id: int, data: MessageCreate
+    ) -> MessageResponse:
+        participant = await self.get_participant(conversation_id, sender_id)
         if not participant:
             raise ValueError("User is not a participant in this conversation")
 
@@ -100,8 +123,10 @@ class MessageService:
             sender_id=sender_id,
             content=data.content,
             reply_to_id=data.reply_to_id,
-            is_flagged=moderation_result.get('is_flagged', False),
-            moderation_status='pending' if moderation_result.get('requires_review', False) else 'approved'
+            is_flagged=moderation_result.get("is_flagged", False),
+            moderation_status="pending"
+            if moderation_result.get("requires_review", False)
+            else "approved",
         )
 
         self.db.add(message)
@@ -111,7 +136,7 @@ class MessageService:
             select(Message)
             .options(
                 selectinload(Message.sender),
-                selectinload(Message.reply_to).selectinload(Message.sender)
+                selectinload(Message.reply_to).selectinload(Message.sender),
             )
             .where(Message.id == message.id)
         )
@@ -123,10 +148,7 @@ class MessageService:
             conversation.last_message_preview = data.content[:100]
             conversation.updated_at = message.created_at
 
-        read_receipt = MessageReadReceipt(
-            message_id=message.id,
-            user_id=sender_id
-        )
+        read_receipt = MessageReadReceipt(message_id=message.id, user_id=sender_id)
         self.db.add(read_receipt)
 
         await self.db.commit()
@@ -134,15 +156,21 @@ class MessageService:
         await self._send_email_notifications(conversation_id, sender_id, message)
 
         message_response = await self._format_message(message, sender_id)
-        await self._notify_conversation_participants(conversation_id, sender_id, {
-            'type': 'new_message',
-            'conversation_id': conversation_id,
-            'message': message_response.model_dump(mode='json')
-        })
+        await self._notify_conversation_participants(
+            conversation_id,
+            sender_id,
+            {
+                "type": "new_message",
+                "conversation_id": conversation_id,
+                "message": message_response.model_dump(mode="json"),
+            },
+        )
 
         return message_response
 
-    async def _send_email_notifications(self, conversation_id: int, sender_id: int, message: Message):
+    async def _send_email_notifications(
+        self, conversation_id: int, sender_id: int, message: Message
+    ):
         try:
             sender_result = await self.db.execute(
                 select(User).where(User.id == sender_id)
@@ -157,7 +185,7 @@ class MessageService:
                 .where(
                     and_(
                         ConversationParticipant.conversation_id == conversation_id,
-                        ConversationParticipant.user_id != sender_id
+                        ConversationParticipant.user_id != sender_id,
                     )
                 )
             )
@@ -172,22 +200,19 @@ class MessageService:
                     continue
 
                 if websocket_manager.is_user_connected(recipient.id):
-                    logger.debug(f"User {recipient.id} is online, skipping email notification")
                     continue
 
-                existing_unread_query = (
-                    select(func.count(Message.id))
-                    .where(
-                        and_(
-                            Message.conversation_id == conversation_id,
-                            Message.sender_id == sender_id,
-                            Message.is_deleted == False,
-                            Message.id != message.id,
-                            Message.id.not_in(
-                                select(MessageReadReceipt.message_id)
-                                .where(MessageReadReceipt.user_id == recipient.id)
+                existing_unread_query = select(func.count(Message.id)).where(
+                    and_(
+                        Message.conversation_id == conversation_id,
+                        Message.sender_id == sender_id,
+                        Message.is_deleted.is_(False),
+                        Message.id != message.id,
+                        Message.id.not_in(
+                            select(MessageReadReceipt.message_id).where(
+                                MessageReadReceipt.user_id == recipient.id
                             )
-                        )
+                        ),
                     )
                 )
 
@@ -198,13 +223,15 @@ class MessageService:
                     await self._send_new_message_email(
                         recipient=recipient,
                         sender=sender,
-                        message_content=message.content
+                        message_content=message.content,
                     )
 
         except Exception as e:
-            logger.error(f"Failed to send email notifications: {e}")
+            print(e)
 
-    async def _send_new_message_email(self, recipient: User, sender: User, message_content: str):
+    async def _send_new_message_email(
+        self, recipient: User, sender: User, message_content: str
+    ):
         try:
             recipient_name = recipient.first_name or recipient.display_name
             sender_name = sender.first_name or sender.display_name
@@ -219,15 +246,15 @@ class MessageService:
                 to_email=recipient.email,
                 subject=f"Neue Nachricht von {sender_name}",
                 body=email_html,
-                is_html=True
+                is_html=True,
             )
 
-            logger.info(f"Sent new message email to {recipient.email} from {sender.display_name}")
-
         except Exception as e:
-            logger.error(f"Failed to send email to {recipient.email}: {e}")
+            print(e)
 
-    async def get_conversations(self, user_id: int, page: int = 1, size: int = 20) -> ConversationListResponse:
+    async def get_conversations(
+        self, user_id: int, page: int = 1, size: int = 20
+    ) -> ConversationListResponse:
         offset = (page - 1) * size
 
         query = (
@@ -236,13 +263,15 @@ class MessageService:
             .where(
                 and_(
                     ConversationParticipant.user_id == user_id,
-                    ConversationParticipant.is_archived == False,
-                    Conversation.is_active == True
+                    ConversationParticipant.is_archived.is_(False),
+                    Conversation.is_active,
                 )
             )
             .options(
-                selectinload(Conversation.participants).selectinload(ConversationParticipant.user),
-                selectinload(Conversation.messages).selectinload(Message.sender)
+                selectinload(Conversation.participants).selectinload(
+                    ConversationParticipant.user
+                ),
+                selectinload(Conversation.messages).selectinload(Message.sender),
             )
             .order_by(desc(Conversation.last_message_at))
             .offset(offset)
@@ -258,15 +287,15 @@ class MessageService:
             .where(
                 and_(
                     ConversationParticipant.user_id == user_id,
-                    ConversationParticipant.is_archived == False,
-                    Conversation.is_active == True
+                    ConversationParticipant.is_archived.is_(False),
+                    Conversation.is_active,
                 )
             )
         )
         total_result = await self.db.execute(count_query)
         total = total_result.scalar() or 0
 
-        formatted_conversations = []
+        formatted_conversations: list[ConversationResponse] = []
         for conv in conversations:
             formatted_conv = await self._format_conversation(conv, user_id)
             formatted_conversations.append(formatted_conv)
@@ -276,11 +305,13 @@ class MessageService:
             total=total,
             page=page,
             size=size,
-            has_more=total > page * size
+            has_more=total > page * size,
         )
 
-    async def get_conversation(self, user_id: int, conversation_id: int) -> ConversationDetailResponse:
-        participant = await self._get_participant(conversation_id, user_id)
+    async def get_conversation(
+        self, user_id: int, conversation_id: int
+    ) -> ConversationDetailResponse:
+        participant = await self.get_participant(conversation_id, user_id)
         if not participant:
             raise ValueError("User is not a participant in this conversation")
 
@@ -288,9 +319,11 @@ class MessageService:
             select(Conversation)
             .where(Conversation.id == conversation_id)
             .options(
-                selectinload(Conversation.participants).selectinload(ConversationParticipant.user),
+                selectinload(Conversation.participants).selectinload(
+                    ConversationParticipant.user
+                ),
                 selectinload(Conversation.messages).selectinload(Message.sender),
-                selectinload(Conversation.messages).selectinload(Message.read_receipts)
+                selectinload(Conversation.messages).selectinload(Message.read_receipts),
             )
         )
 
@@ -308,9 +341,9 @@ class MessageService:
         conversation_id: int,
         page: int = 1,
         size: int = 50,
-        before_message_id: Optional[int] = None
+        before_message_id: int | None = None,
     ) -> MessageListResponse:
-        participant = await self._get_participant(conversation_id, user_id)
+        participant = await self.get_participant(conversation_id, user_id)
         if not participant:
             raise ValueError("User is not a participant in this conversation")
 
@@ -319,13 +352,13 @@ class MessageService:
             .where(
                 and_(
                     Message.conversation_id == conversation_id,
-                    Message.is_deleted == False
+                    Message.is_deleted.is_(False),
                 )
             )
             .options(
                 selectinload(Message.sender),
                 selectinload(Message.reply_to).selectinload(Message.sender),
-                selectinload(Message.read_receipts)
+                selectinload(Message.read_receipts),
             )
         )
 
@@ -340,13 +373,13 @@ class MessageService:
         count_query = select(func.count(Message.id)).where(
             and_(
                 Message.conversation_id == conversation_id,
-                Message.is_deleted == False
+                Message.is_deleted.is_(False),
             )
         )
         total_result = await self.db.execute(count_query)
         total = total_result.scalar() or 0
 
-        formatted_messages = []
+        formatted_messages: list[MessageResponse] = []
         for message in reversed(messages):
             formatted_msg = await self._format_message(message, user_id)
             formatted_messages.append(formatted_msg)
@@ -356,31 +389,29 @@ class MessageService:
             total=total,
             page=page,
             size=size,
-            has_more=len(messages) == size
+            has_more=len(messages) == size,
         )
 
-    async def mark_messages_as_read(self, user_id: int, conversation_id: int, up_to_message_id: Optional[int] = None):
-        participant = await self._get_participant(conversation_id, user_id)
+    async def mark_messages_as_read(
+        self, user_id: int, conversation_id: int, up_to_message_id: int | None = None
+    ):
+        participant = await self.get_participant(conversation_id, user_id)
         if not participant:
             raise ValueError("User is not a participant in this conversation")
 
-        query = (
-            select(Message.id)
-            .where(
-                and_(
-                    Message.conversation_id == conversation_id,
-                    Message.sender_id != user_id,
-                    Message.is_deleted == False
-                )
+        query = select(Message.id).where(
+            and_(
+                Message.conversation_id == conversation_id,
+                Message.sender_id != user_id,
+                Message.is_deleted.is_(False),
             )
         )
 
         if up_to_message_id:
             query = query.where(Message.id <= up_to_message_id)
 
-        read_subquery = (
-            select(MessageReadReceipt.message_id)
-            .where(MessageReadReceipt.user_id == user_id)
+        read_subquery = select(MessageReadReceipt.message_id).where(
+            MessageReadReceipt.user_id == user_id
         )
         query = query.where(Message.id.not_in(read_subquery))
 
@@ -397,43 +428,42 @@ class MessageService:
 
         await self.db.commit()
 
-        await self._notify_conversation_participants(conversation_id, user_id, {
-            'type': 'messages_read',
-            'conversation_id': conversation_id,
-            'user_id': user_id,
-            'read_up_to': up_to_message_id
-        })
+        await self._notify_conversation_participants(
+            conversation_id,
+            user_id,
+            {
+                "type": "messages_read",
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "read_up_to": up_to_message_id,
+            },
+        )
 
     async def get_unread_count(self, user_id: int) -> UnreadCountResponse:
-        conversations_query = (
-            select(ConversationParticipant.conversation_id)
-            .where(
-                and_(
-                    ConversationParticipant.user_id == user_id,
-                    ConversationParticipant.is_archived == False
-                )
+        conversations_query = select(ConversationParticipant.conversation_id).where(
+            and_(
+                ConversationParticipant.user_id == user_id,
+                ConversationParticipant.is_archived.is_(False),
             )
         )
 
         result = await self.db.execute(conversations_query)
         conversation_ids = result.scalars().all()
 
-        conversation_counts = []
+        conversation_counts: list[dict[str, object]] = []
         total_unread = 0
 
         for conv_id in conversation_ids:
-            unread_query = (
-                select(func.count(Message.id))
-                .where(
-                    and_(
-                        Message.conversation_id == conv_id,
-                        Message.sender_id != user_id,
-                        Message.is_deleted == False,
-                        Message.id.not_in(
-                            select(MessageReadReceipt.message_id)
-                            .where(MessageReadReceipt.user_id == user_id)
+            unread_query = select(func.count(Message.id)).where(
+                and_(
+                    Message.conversation_id == conv_id,
+                    Message.sender_id != user_id,
+                    Message.is_deleted.is_(False),
+                    Message.id.not_in(
+                        select(MessageReadReceipt.message_id).where(
+                            MessageReadReceipt.user_id == user_id
                         )
-                    )
+                    ),
                 )
             )
 
@@ -441,18 +471,18 @@ class MessageService:
             unread_count = unread_result.scalar() or 0
 
             if unread_count > 0:
-                conversation_counts.append({
-                    'conversation_id': conv_id,
-                    'unread_count': unread_count
-                })
+                conversation_counts.append(
+                    {"conversation_id": conv_id, "unread_count": unread_count}
+                )
                 total_unread += unread_count
 
         return UnreadCountResponse(
-            total_unread=total_unread,
-            conversations=conversation_counts
+            total_unread=total_unread, conversations=conversation_counts
         )
 
-    async def edit_message(self, user_id: int, message_id: int, data: MessageUpdate) -> MessageResponse:
+    async def edit_message(
+        self, user_id: int, message_id: int, data: MessageUpdate
+    ) -> MessageResponse:
         result = await self.db.execute(
             select(Message)
             .where(Message.id == message_id)
@@ -478,24 +508,28 @@ class MessageService:
         message.content = data.content
         message.edited_at = datetime.now()
         message.is_edited = True
-        message.is_flagged = moderation_result.get('is_flagged', False)
-        message.moderation_status = 'pending' if moderation_result.get('requires_review', False) else 'approved'
+        message.is_flagged = moderation_result.get("is_flagged", False)
+        message.moderation_status = (
+            "pending" if moderation_result.get("requires_review", False) else "approved"
+        )
 
         await self.db.commit()
 
         message_response = await self._format_message(message, user_id)
-        await self._notify_conversation_participants(message.conversation_id, user_id, {
-            'type': 'message_edited',
-            'conversation_id': message.conversation_id,
-            'message': message_response.model_dump()
-        })
+        await self._notify_conversation_participants(
+            message.conversation_id,
+            user_id,
+            {
+                "type": "message_edited",
+                "conversation_id": message.conversation_id,
+                "message": message_response.model_dump(),
+            },
+        )
 
         return message_response
 
     async def delete_message(self, user_id: int, message_id: int) -> bool:
-        result = await self.db.execute(
-            select(Message).where(Message.id == message_id)
-        )
+        result = await self.db.execute(select(Message).where(Message.id == message_id))
         message = result.scalar_one_or_none()
 
         if not message:
@@ -509,11 +543,15 @@ class MessageService:
 
         await self.db.commit()
 
-        await self._notify_conversation_participants(message.conversation_id, user_id, {
-            'type': 'message_deleted',
-            'conversation_id': message.conversation_id,
-            'message_id': message_id
-        })
+        await self._notify_conversation_participants(
+            message.conversation_id,
+            user_id,
+            {
+                "type": "message_deleted",
+                "conversation_id": message.conversation_id,
+                "message_id": message_id,
+            },
+        )
 
         return True
 
@@ -521,10 +559,10 @@ class MessageService:
         self,
         user_id: int,
         conversation_id: int,
-        is_muted: Optional[bool] = None,
-        is_archived: Optional[bool] = None
+        is_muted: bool | None = None,
+        is_archived: bool | None = None,
     ) -> bool:
-        participant = await self._get_participant(conversation_id, user_id)
+        participant = await self.get_participant(conversation_id, user_id)
         if not participant:
             raise ValueError("User is not a participant in this conversation")
 
@@ -537,49 +575,48 @@ class MessageService:
         await self.db.commit()
         return True
 
-    async def _get_conversation_between_users(self, user1_id: int, user2_id: int) -> Optional[Conversation]:
+    async def _get_conversation_between_users(
+        self, user1_id: int, user2_id: int
+    ) -> Conversation | None:
         subquery = (
             select(ConversationParticipant.conversation_id)
             .where(ConversationParticipant.user_id == user1_id)
             .intersect(
-                select(ConversationParticipant.conversation_id)
-                .where(ConversationParticipant.user_id == user2_id)
+                select(ConversationParticipant.conversation_id).where(
+                    ConversationParticipant.user_id == user2_id
+                )
             )
         )
 
-        final_query = (
-            select(Conversation)
-            .where(Conversation.id.in_(subquery))
-            .limit(1)
-        )
+        final_query = select(Conversation).where(Conversation.id.in_(subquery)).limit(1)
 
         result = await self.db.execute(final_query)
         return result.scalar_one_or_none()
 
-    async def _get_participant(self, conversation_id: int, user_id: int) -> Optional[ConversationParticipant]:
+    async def get_participant(
+        self, conversation_id: int, user_id: int
+    ) -> ConversationParticipant | None:
         result = await self.db.execute(
-            select(ConversationParticipant)
-            .where(
+            select(ConversationParticipant).where(
                 and_(
                     ConversationParticipant.conversation_id == conversation_id,
-                    ConversationParticipant.user_id == user_id
+                    ConversationParticipant.user_id == user_id,
                 )
             )
         )
         return result.scalar_one_or_none()
 
-    async def _format_message(self, message: Message, current_user_id: int) -> MessageResponse:
+    async def _format_message(
+        self, message: Message, current_user_id: int
+    ) -> MessageResponse:
         is_read = False
         if message.sender_id == current_user_id:
             is_read = True
         else:
-            read_receipt_query = (
-                select(MessageReadReceipt)
-                .where(
-                    and_(
-                        MessageReadReceipt.message_id == message.id,
-                        MessageReadReceipt.user_id == current_user_id
-                    )
+            read_receipt_query = select(MessageReadReceipt).where(
+                and_(
+                    MessageReadReceipt.message_id == message.id,
+                    MessageReadReceipt.user_id == current_user_id,
                 )
             )
             read_result = await self.db.execute(read_receipt_query)
@@ -590,15 +627,19 @@ class MessageService:
             reply_to = MessageResponse(
                 id=message.reply_to.id,
                 conversation_id=message.reply_to.conversation_id,
-                sender=UserSummary.model_validate(message.reply_to.sender, from_attributes=True),
-                content=message.reply_to.content[:100] + "..." if len(message.reply_to.content) > 100 else message.reply_to.content,
+                sender=UserSummary.model_validate(
+                    message.reply_to.sender, from_attributes=True
+                ),
+                content=message.reply_to.content[:100] + "..."
+                if len(message.reply_to.content) > 100
+                else message.reply_to.content,
                 message_type=message.reply_to.message_type,
                 created_at=message.reply_to.created_at,
                 edited_at=message.reply_to.edited_at,
                 is_edited=message.reply_to.is_edited,
                 is_deleted=message.reply_to.is_deleted,
                 reply_to_id=None,
-                is_read=True
+                is_read=True,
             )
 
         return MessageResponse(
@@ -613,27 +654,35 @@ class MessageService:
             is_deleted=message.is_deleted,
             reply_to_id=message.reply_to_id,
             reply_to=reply_to,
-            is_read=is_read
+            is_read=is_read,
         )
 
-    async def _format_conversation(self, conversation: Conversation, current_user_id: int) -> ConversationResponse:
-        participants = []
+    async def _format_conversation(
+        self, conversation: Conversation, current_user_id: int
+    ) -> ConversationResponse:
+        participants: list[ConversationParticipantResponse] = []
         for participant in conversation.participants:
             if participant.user_id != current_user_id:
-                participants.append(ConversationParticipantResponse(
-                    user=UserSummary.model_validate(participant.user, from_attributes=True),
-                    joined_at=participant.joined_at,
-                    last_read_at=participant.last_read_at,
-                    is_muted=participant.is_muted,
-                    is_archived=participant.is_archived
-                ))
+                participants.append(
+                    ConversationParticipantResponse(
+                        user=UserSummary.model_validate(
+                            participant.user, from_attributes=True
+                        ),
+                        joined_at=participant.joined_at,
+                        last_read_at=participant.last_read_at,
+                        is_muted=participant.is_muted,
+                        is_archived=participant.is_archived,
+                    )
+                )
 
         last_message = None
-        if hasattr(conversation, 'messages') and conversation.messages:
+        if hasattr(conversation, "messages") and conversation.messages:
             latest_msg = max(conversation.messages, key=lambda m: m.created_at)
             last_message = await self._format_message(latest_msg, current_user_id)
 
-        unread_count = await self._get_unread_count_for_conversation(conversation.id, current_user_id)
+        unread_count = await self._get_unread_count_for_conversation(
+            conversation.id, current_user_id
+        )
 
         return ConversationResponse(
             id=conversation.id,
@@ -642,32 +691,40 @@ class MessageService:
             last_message_at=conversation.last_message_at,
             unread_count=unread_count,
             created_at=conversation.created_at,
-            updated_at=conversation.updated_at
+            updated_at=conversation.updated_at,
         )
 
-    async def _format_conversation_detail(self, conversation: Conversation, current_user_id: int) -> ConversationDetailResponse:
-        participants = []
+    async def _format_conversation_detail(
+        self, conversation: Conversation, current_user_id: int
+    ) -> ConversationDetailResponse:
+        participants: list[ConversationParticipantResponse] = []
         for participant in conversation.participants:
-            participants.append(ConversationParticipantResponse(
-                user=UserSummary.model_validate(participant.user, from_attributes=True),
-                joined_at=participant.joined_at,
-                last_read_at=participant.last_read_at,
-                is_muted=participant.is_muted,
-                is_archived=participant.is_archived
-            ))
+            participants.append(
+                ConversationParticipantResponse(
+                    user=UserSummary.model_validate(
+                        participant.user, from_attributes=True
+                    ),
+                    joined_at=participant.joined_at,
+                    last_read_at=participant.last_read_at,
+                    is_muted=participant.is_muted,
+                    is_archived=participant.is_archived,
+                )
+            )
 
         recent_messages = sorted(
             [msg for msg in conversation.messages if not msg.is_deleted],
             key=lambda m: m.created_at,
-            reverse=True
+            reverse=True,
         )[:50]
 
-        messages = []
+        messages: list[MessageResponse] = []
         for message in reversed(recent_messages):
             formatted_msg = await self._format_message(message, current_user_id)
             messages.append(formatted_msg)
 
-        unread_count = await self._get_unread_count_for_conversation(conversation.id, current_user_id)
+        unread_count = await self._get_unread_count_for_conversation(
+            conversation.id, current_user_id
+        )
 
         return ConversationDetailResponse(
             id=conversation.id,
@@ -676,33 +733,34 @@ class MessageService:
             unread_count=unread_count,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            has_more=len(conversation.messages) > 50
+            has_more=len(conversation.messages) > 50,
         )
 
-    async def _get_unread_count_for_conversation(self, conversation_id: int, user_id: int) -> int:
-        unread_query = (
-            select(func.count(Message.id))
-            .where(
-                and_(
-                    Message.conversation_id == conversation_id,
-                    Message.sender_id != user_id,
-                    Message.is_deleted == False,
-                    Message.id.not_in(
-                        select(MessageReadReceipt.message_id)
-                        .where(MessageReadReceipt.user_id == user_id)
+    async def _get_unread_count_for_conversation(
+        self, conversation_id: int, user_id: int
+    ) -> int:
+        unread_query = select(func.count(Message.id)).where(
+            and_(
+                Message.conversation_id == conversation_id,
+                Message.sender_id != user_id,
+                Message.is_deleted.is_(False),
+                Message.id.not_in(
+                    select(MessageReadReceipt.message_id).where(
+                        MessageReadReceipt.user_id == user_id
                     )
-                )
+                ),
             )
         )
 
         result = await self.db.execute(unread_query)
         return result.scalar() or 0
 
-    async def _notify_conversation_participants(self, conversation_id: int, exclude_user_id: Optional[int], data: dict):
+    async def _notify_conversation_participants(
+        self, conversation_id: int, exclude_user_id: int | None, data: dict[str, object]
+    ):
         try:
-            participants_query = (
-                select(ConversationParticipant.user_id)
-                .where(ConversationParticipant.conversation_id == conversation_id)
+            participants_query = select(ConversationParticipant.user_id).where(
+                ConversationParticipant.conversation_id == conversation_id
             )
 
             if exclude_user_id:
@@ -717,48 +775,35 @@ class MessageService:
                 await websocket_manager.send_to_user(user_id, data)
 
         except Exception as e:
-            logger.error(f"Failed to send WebSocket notification: {e}")
+            print(f"Failed to send WebSocket notification: {e}")
 
     async def cleanup_old_messages(self, days_old: int = 365):
         cutoff_date = datetime.now() - timedelta(days=days_old)
 
         result = await self.db.execute(
-            select(func.count(Message.id))
-            .where(
-                and_(
-                    Message.is_deleted == True,
-                    Message.created_at < cutoff_date
-                )
+            select(func.count(Message.id)).where(
+                and_(Message.is_deleted, Message.created_at < cutoff_date)
             )
         )
         count = result.scalar() or 0
 
         if count > 0:
-            await self.db.execute(
+            _ = await self.db.execute(
                 delete(Message).where(
-                    and_(
-                        Message.is_deleted == True,
-                        Message.created_at < cutoff_date
-                    )
+                    and_(Message.is_deleted, Message.created_at < cutoff_date)
                 )
             )
             await self.db.commit()
-            logger.info(f"Cleaned up {count} old deleted messages")
 
         return count
 
     async def cleanup_empty_conversations(self):
-        conversations_with_messages = (
-            select(Message.conversation_id.distinct())
-        )
+        conversations_with_messages = select(Message.conversation_id.distinct())
 
-        empty_conversations_query = (
-            select(Conversation.id)
-            .where(
-                and_(
-                    Conversation.id.not_in(conversations_with_messages),
-                    Conversation.created_at < datetime.now() - timedelta(hours=1)
-                )
+        empty_conversations_query = select(Conversation.id).where(
+            and_(
+                Conversation.id.not_in(conversations_with_messages),
+                Conversation.created_at < datetime.now() - timedelta(hours=1),
             )
         )
 
@@ -766,20 +811,17 @@ class MessageService:
         empty_conversation_ids = result.scalars().all()
 
         if empty_conversation_ids:
-            await self.db.execute(
+            _ = await self.db.execute(
                 delete(ConversationParticipant).where(
                     ConversationParticipant.conversation_id.in_(empty_conversation_ids)
                 )
             )
 
-            await self.db.execute(
-                delete(Conversation).where(
-                    Conversation.id.in_(empty_conversation_ids)
-                )
+            _ = await self.db.execute(
+                delete(Conversation).where(Conversation.id.in_(empty_conversation_ids))
             )
 
             await self.db.commit()
-            logger.info(f"Cleaned up {len(empty_conversation_ids)} empty conversations")
 
         return len(empty_conversation_ids)
 
@@ -788,16 +830,8 @@ class MessageService:
 
         query = (
             select(Message)
-            .where(
-                or_(
-                    Message.is_flagged == True,
-                    Message.moderation_status == 'pending'
-                )
-            )
-            .options(
-                selectinload(Message.sender),
-                selectinload(Message.conversation)
-            )
+            .where(or_(Message.is_flagged, Message.moderation_status == "pending"))
+            .options(selectinload(Message.sender), selectinload(Message.conversation))
             .order_by(desc(Message.created_at))
             .offset(offset)
             .limit(size)
@@ -807,41 +841,38 @@ class MessageService:
         messages = result.scalars().all()
 
         count_query = select(func.count(Message.id)).where(
-            or_(
-                Message.is_flagged == True,
-                Message.moderation_status == 'pending'
-            )
+            or_(Message.is_flagged, Message.moderation_status == "pending")
         )
         total_result = await self.db.execute(count_query)
         total = total_result.scalar() or 0
 
         return {
-            'messages': messages,
-            'total': total,
-            'page': page,
-            'size': size,
-            'has_more': total > page * size
+            "messages": messages,
+            "total": total,
+            "page": page,
+            "size": size,
+            "has_more": total > page * size,
         }
 
-    async def moderate_message(self, admin_id: int, message_id: int, action: str, reason: Optional[str] = None):
-        result = await self.db.execute(
-            select(Message).where(Message.id == message_id)
-        )
+    async def moderate_message(
+        self, admin_id: int, message_id: int, action: str, reason: str | None = None
+    ):
+        result = await self.db.execute(select(Message).where(Message.id == message_id))
         message = result.scalar_one_or_none()
 
         if not message:
             raise ValueError("Message not found")
 
-        if action == 'approve':
-            message.moderation_status = 'approved'
+        if action == "approve":
+            message.moderation_status = "approved"
             message.is_flagged = False
-        elif action == 'reject':
-            message.moderation_status = 'rejected'
+        elif action == "reject":
+            message.moderation_status = "rejected"
             message.is_deleted = True
             message.content = "[Message removed by moderator]"
-        elif action == 'flag':
+        elif action == "flag":
             message.is_flagged = True
-            message.moderation_status = 'pending'
+            message.moderation_status = "pending"
 
         message.moderation_reason = reason
         message.moderated_at = datetime.now()
@@ -849,12 +880,16 @@ class MessageService:
 
         await self.db.commit()
 
-        if action == 'reject':
-            await self._notify_conversation_participants(message.conversation_id, None, {
-                'type': 'message_moderated',
-                'conversation_id': message.conversation_id,
-                'message_id': message_id,
-                'action': 'removed'
-            })
+        if action == "reject":
+            await self._notify_conversation_participants(
+                message.conversation_id,
+                None,
+                {
+                    "type": "message_moderated",
+                    "conversation_id": message.conversation_id,
+                    "message_id": message_id,
+                    "action": "removed",
+                },
+            )
 
         return True

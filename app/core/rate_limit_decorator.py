@@ -1,15 +1,18 @@
 from functools import wraps
-from fastapi import HTTPException, status
-from typing import Callable
+from fastapi import HTTPException, status, Request, Response
+from typing import Callable, TypeVar, ParamSpec, cast
+from _collections_abc import Awaitable
 from .content_rate_limiter import content_rate_limiter, ContentType
 from .logging import SecurityLogger
 from ..models.user import User
 
-def content_rate_limit(content_type: ContentType):
+P = ParamSpec('P')
+T = TypeVar('T')
 
-    def decorator(func: Callable) -> Callable:
+def content_rate_limit(content_type: ContentType):
+    def decorator[T](func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: object, **kwargs: object) -> T:
             request = None
             current_user = None
 
@@ -35,6 +38,10 @@ def content_rate_limit(content_type: ContentType):
                     detail="Authentication required for rate limiting"
                 )
 
+            assert isinstance(current_user, User)
+
+
+
             user_tier = content_rate_limiter.get_user_tier(
                 current_user.created_at,
                 is_trusted=getattr(current_user, 'is_trusted', False)
@@ -48,6 +55,7 @@ def content_rate_limit(content_type: ContentType):
 
             if not rate_check["allowed"]:
                 if request:
+                    assert isinstance(request, Request)
                     SecurityLogger.log_rate_limit_exceeded(
                         request,
                         f"content_{content_type.value}",
@@ -83,6 +91,8 @@ def content_rate_limit(content_type: ContentType):
 
             if hasattr(result, 'headers') and rate_check.get("remaining"):
                 remaining = rate_check["remaining"]
+                assert isinstance(result, Response)
+                remaining = cast(dict[str, int], rate_check["remaining"])
                 result.headers["X-RateLimit-Remaining-Hourly"] = str(remaining.get("hourly", 0))
                 result.headers["X-RateLimit-Remaining-Daily"] = str(remaining.get("daily", 0))
                 if remaining.get("weekly") is not None:
@@ -93,39 +103,39 @@ def content_rate_limit(content_type: ContentType):
         return wrapper
     return decorator
 
-def forum_post_rate_limit(func: Callable) -> Callable:
+def forum_post_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.FORUM_POST)(func)
 
-def forum_reply_rate_limit(func: Callable) -> Callable:
+def forum_reply_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.FORUM_REPLY)(func)
 
-def event_create_rate_limit(func: Callable) -> Callable:
+def event_create_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.EVENT_CREATE)(func)
 
-def service_create_rate_limit(func: Callable) -> Callable:
+def service_create_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.SERVICE_CREATE)(func)
 
-def message_rate_limit(func: Callable) -> Callable:
+def message_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.PRIVATE_MESSAGE)(func)
 
-def conversation_rate_limit(func: Callable) -> Callable:
+def conversation_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.NEW_CONVERSATION)(func)
 
-def comment_rate_limit(func: Callable) -> Callable:
+def comment_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.COMMENT)(func)
 
-def poll_create_rate_limit(func: Callable) -> Callable:
+def poll_create_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.POLL_CREATE)(func)
 
-def poll_vote_rate_limit(func: Callable) -> Callable:
+def poll_vote_rate_limit(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     return content_rate_limit(ContentType.POLL_VOTE)(func)
 
 class ReadRateLimiter:
 
     def __init__(self):
-        self.attempts = {}
+        self.attempts: dict[str, dict[str, list[tuple[float, int]]]] = {}
 
-        self.limits = {
+        self.limits: dict[str, int] = {
             "user_profile": 200,
             "user_search": 100,
             "event_listing": 300,
@@ -137,7 +147,7 @@ class ReadRateLimiter:
             "general_api": 1000
         }
 
-    def check_read_limit(self, ip_address: str, endpoint_type: str) -> dict:
+    def check_read_limit(self, ip_address: str, endpoint_type: str) -> dict[str, object]:
         import time
 
         now = time.time()
@@ -151,7 +161,7 @@ class ReadRateLimiter:
         attempts = self.attempts[ip_address][endpoint_type]
         attempts[:] = [(timestamp, count) for timestamp, count in attempts if timestamp > hour_ago]
 
-        current_count = sum(count for timestamp, count in attempts)
+        current_count = sum(count for _timestamp, count in attempts)
         limit = self.limits.get(endpoint_type, self.limits["general_api"])
 
         if current_count >= limit:
@@ -174,10 +184,9 @@ class ReadRateLimiter:
 read_rate_limiter = ReadRateLimiter()
 
 def read_rate_limit(endpoint_type: str):
-
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: object, **kwargs: object) -> T:
             request = None
             for arg in args:
                 if hasattr(arg, 'method') and hasattr(arg, 'client'):
@@ -185,12 +194,13 @@ def read_rate_limit(endpoint_type: str):
                     break
 
             if not request:
-                for key, value in kwargs.items():
+                for _key, value in kwargs.items():
                     if hasattr(value, 'method') and hasattr(value, 'client'):
                         request = value
                         break
 
             if request:
+                assert isinstance(request, Request)
                 from .logging import get_client_ip
                 ip_address = get_client_ip(request)
 

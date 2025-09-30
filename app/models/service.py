@@ -1,12 +1,9 @@
 from datetime import datetime
-from typing import List, Optional, TYPE_CHECKING
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
-if TYPE_CHECKING:
-    from .user import User
-    from .comment import Comment
+
 
 class Service(Base):
     __tablename__ = "services"
@@ -16,29 +13,35 @@ class Service(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_offering: Mapped[bool] = mapped_column(Boolean, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now()
+    )
 
-    service_image_url: Mapped[Optional[str]] = mapped_column(String(500))
-    meeting_locations: Mapped[Optional[List[str]]] = mapped_column(JSON)
+    service_image_url: Mapped[str | None] = mapped_column(String(500))
+    meeting_locations: Mapped[list[str | None]] = mapped_column(JSON)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     interest_count: Mapped[int] = mapped_column(Integer, default=0)
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     user: Mapped["User"] = relationship("User", back_populates="services")
 
-    price_type: Mapped[Optional[str]] = mapped_column(String(50))
-    price_amount: Mapped[Optional[float]] = mapped_column()
-    price_currency: Mapped[str] = mapped_column(String(3), default='EUR')
-    estimated_duration_hours: Mapped[Optional[float]] = mapped_column()
-    contact_method: Mapped[str] = mapped_column(String(50), default='message')
-    response_time_hours: Mapped[Optional[int]] = mapped_column()
+    price_type: Mapped[str | None] = mapped_column(String(50))
+    price_amount: Mapped[float | None] = mapped_column()
+    price_currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    estimated_duration_hours: Mapped[float | None] = mapped_column()
+    contact_method: Mapped[str] = mapped_column(String(50), default="message")
+    response_time_hours: Mapped[int | None] = mapped_column()
 
-    admin_notes: Mapped[Optional[str]] = mapped_column(Text)
-    flagged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    flagged_reason: Mapped[Optional[str]] = mapped_column(String(500))
-    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    reviewed_by: Mapped[Optional[int]] = mapped_column(Integer)
+    admin_notes: Mapped[str | None] = mapped_column(Text)
+    flagged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    flagged_reason: Mapped[str | None] = mapped_column(String(500))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[int | None] = mapped_column(Integer)
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    comments: Mapped[List["Comment"]] = relationship("Comment", back_populates="service")
+    comments: Mapped[list["Comment"]] = relationship(
+        "Comment", back_populates="service"
+    )
