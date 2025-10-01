@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from typing import Annotated
 
@@ -62,8 +62,28 @@ async def get_threads(
 
     result = await db.execute(query)
     threads = result.scalars().all()
+    enriched_threads: list[ForumThreadRead] = []
+    for thread in threads:
+        post_count_result = await db.execute(
+            select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
+        )
+        post_count = post_count_result.scalar() or 0
 
-    return [ForumThreadRead.model_validate(thread) for thread in threads]
+        latest_post_result = await db.execute(
+            select(ForumPost.created_at)
+            .where(ForumPost.thread_id == thread.id)
+            .order_by(ForumPost.created_at.desc())
+            .limit(1)
+        )
+        latest_post = latest_post_result.scalar_one_or_none()
+
+        thread_dict = ForumThreadRead.model_validate(thread).model_dump()
+        thread_dict["post_count"] = post_count
+        thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+
+        enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
+
+    return enriched_threads
 
 
 @router.get(
@@ -107,7 +127,108 @@ async def get_threads_in_category(
     result = await db.execute(query)
     threads = result.scalars().all()
 
-    return [ForumThreadRead.model_validate(thread) for thread in threads]
+    enriched_threads: list[ForumThreadRead] = []
+    for thread in threads:
+        post_count_result = await db.execute(
+            select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
+        )
+        post_count = post_count_result.scalar() or 0
+
+        latest_post_result = await db.execute(
+            select(ForumPost.created_at)
+            .where(ForumPost.thread_id == thread.id)
+            .order_by(ForumPost.created_at.desc())
+            .limit(1)
+        )
+        latest_post = latest_post_result.scalar_one_or_none()
+
+        thread_dict = ForumThreadRead.model_validate(thread).model_dump()
+        thread_dict["post_count"] = post_count
+        thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+
+        enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
+
+    return enriched_threads
+
+
+@router.get("/my/threads", response_model=list[ForumThreadRead])
+async def get_my_threads(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    query = (
+        select(ForumThread)
+        .where(ForumThread.creator_id == current_user.id)
+        .options(selectinload(ForumThread.creator), selectinload(ForumThread.category))
+        .order_by(ForumThread.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+
+    result = await db.execute(query)
+    threads = result.scalars().all()
+
+    enriched_threads: list[ForumThreadRead] = []
+    for thread in threads:
+        post_count_result = await db.execute(
+            select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
+        )
+        post_count = post_count_result.scalar() or 0
+
+        latest_post_result = await db.execute(
+            select(ForumPost.created_at)
+            .where(ForumPost.thread_id == thread.id)
+            .order_by(ForumPost.created_at.desc())
+            .limit(1)
+        )
+        latest_post = latest_post_result.scalar_one_or_none()
+
+        thread_dict = ForumThreadRead.model_validate(thread).model_dump()
+        thread_dict["post_count"] = post_count
+        thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+
+        enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
+
+    return enriched_threads
+
+
+@router.get("/my/posts", response_model=list[ForumPostRead])
+async def get_my_posts(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    query = (
+        select(ForumPost)
+        .where(ForumPost.author_id == current_user.id)
+        .options(selectinload(ForumPost.author))
+        .order_by(ForumPost.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+
+    result = await db.execute(query)
+    posts = result.scalars().all()
+
+    return [ForumPostRead.model_validate(post) for post in posts]
+
+
+async def _check_user_moderation_status(
+    user_id: int, moderation_service: ModerationService
+):
+    try:
+        analysis = await moderation_service.moderate_user_content(user_id)
+
+        if analysis["needs_admin_review"]:
+            print(f"🚨 User {user_id} flagged for admin review:")
+            print(f"   - Flagged items: {analysis['flagged_items']}")
+            print(f"   - Risk score: {analysis['average_risk_score']:.2f}")
+
+    except Exception as e:
+        print(f"⚠️ Background moderation check failed for user {user_id}: {e}")
 
 
 @router.get(
@@ -130,7 +251,24 @@ async def get_thread(thread_id: int, db: Annotated[AsyncSession, Depends(get_db)
             status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
-    return ForumThreadRead.model_validate(thread)
+    post_count_result = await db.execute(
+        select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
+    )
+    post_count = post_count_result.scalar() or 0
+
+    latest_post_result = await db.execute(
+        select(ForumPost.created_at)
+        .where(ForumPost.thread_id == thread.id)
+        .order_by(ForumPost.created_at.desc())
+        .limit(1)
+    )
+    latest_post = latest_post_result.scalar_one_or_none()
+
+    thread_dict = ForumThreadRead.model_validate(thread).model_dump()
+    thread_dict["post_count"] = post_count
+    thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+
+    return ForumThreadRead.model_validate(thread_dict)
 
 
 @router.post(
@@ -438,65 +576,6 @@ async def delete_post(
 
     _ = await db.execute(delete(ForumPost).where(ForumPost.id == post_id))
     await db.commit()
-
-
-@router.get("/my/threads", response_model=list[ForumThreadRead])
-async def get_my_threads(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    skip: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-):
-    query = (
-        select(ForumThread)
-        .where(ForumThread.creator_id == current_user.id)
-        .options(selectinload(ForumThread.creator), selectinload(ForumThread.category))
-        .order_by(ForumThread.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
-
-    result = await db.execute(query)
-    threads = result.scalars().all()
-
-    return [ForumThreadRead.model_validate(thread) for thread in threads]
-
-
-@router.get("/my/posts", response_model=list[ForumPostRead])
-async def get_my_posts(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    skip: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-):
-    query = (
-        select(ForumPost)
-        .where(ForumPost.author_id == current_user.id)
-        .options(selectinload(ForumPost.author))
-        .order_by(ForumPost.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
-
-    result = await db.execute(query)
-    posts = result.scalars().all()
-
-    return [ForumPostRead.model_validate(post) for post in posts]
-
-
-async def _check_user_moderation_status(
-    user_id: int, moderation_service: ModerationService
-):
-    try:
-        analysis = await moderation_service.moderate_user_content(user_id)
-
-        if analysis["needs_admin_review"]:
-            print(f"🚨 User {user_id} flagged for admin review:")
-            print(f"   - Flagged items: {analysis['flagged_items']}")
-            print(f"   - Risk score: {analysis['average_risk_score']:.2f}")
-
-    except Exception as e:
-        print(f"⚠️ Background moderation check failed for user {user_id}: {e}")
 
 
 @router.get("/admin/flagged-content")

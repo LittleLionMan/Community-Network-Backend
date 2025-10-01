@@ -1,22 +1,39 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
+from typing import TYPE_CHECKING
+
 from .user import UserSummary
+
+if TYPE_CHECKING:
+    pass
+
 
 class ForumCategoryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str | None = Field(None, max_length=500)
-    color: str | None = Field(None, pattern=r'^#[0-9A-Fa-f]{6}$')
+    color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
     display_order: int = Field(0, ge=0)
+
 
 class ForumCategoryUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = Field(None, max_length=500)
-    color: str | None = Field(None, pattern=r'^#[0-9A-Fa-f]{6}$')
+    color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
     display_order: int | None = Field(None, ge=0)
     is_active: bool | None = None
+
+
+class ForumThreadSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    created_at: datetime
+    creator: UserSummary
+
 
 class ForumCategoryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -33,23 +50,17 @@ class ForumCategoryRead(BaseModel):
     latest_thread: ForumThreadSummary | None = None
 
 
-class ForumThreadSummary(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    title: str
-    created_at: datetime
-    creator: UserSummary
-
 class ForumThreadCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     category_id: int
+
 
 class ForumThreadUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=200)
     is_pinned: bool | None = None
     is_locked: bool | None = None
     category_id: int | None = None
+
 
 class ForumThreadRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -64,11 +75,14 @@ class ForumThreadRead(BaseModel):
     post_count: int = 0
     latest_post: datetime | None = None
 
+
 class ForumPostCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
 
+
 class ForumPostUpdate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
+
 
 class ForumPostRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -80,4 +94,6 @@ class ForumPostRead(BaseModel):
     author: UserSummary
     thread_id: int
 
+
 _ = ForumCategoryRead.model_rebuild()
+_ = ForumThreadRead.model_rebuild()
