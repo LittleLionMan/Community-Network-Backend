@@ -2,10 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from typing import Annotated
+import re
 
 from app.database import get_db
-from app.models.forum import ForumThread, ForumPost, ForumCategory
+from app.models.forum import ForumThread, ForumPost, ForumCategory, ForumThreadView
 from app.models.user import User
 from app.schemas.forum import (
     ForumThreadCreate,
@@ -23,8 +26,15 @@ from app.core.rate_limit_decorator import (
     read_rate_limit,
 )
 from app.services.moderation_service import ModerationService
+from app.services.notification_service import NotificationService
 
 router = APIRouter()
+
+
+def extract_mentions(html_content: str) -> list[int]:
+    pattern = r'data-id="(\d+)"'
+    matches = re.findall(pattern, html_content)
+    return [int(user_id) for user_id in matches if user_id.isdigit()]
 
 
 @router.get(
@@ -229,6 +239,52 @@ async def _check_user_moderation_status(
 
     except Exception as e:
         print(f"⚠️ Background moderation check failed for user {user_id}: {e}")
+
+
+@router.get(
+    "/unread-status",
+    summary="Get unread status for multiple threads",
+)
+async def get_unread_status(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    thread_ids: Annotated[list[int], Query()] = [],
+):
+    if not thread_ids:
+        return {}
+
+    views_result = await db.execute(
+        select(ForumThreadView).where(
+            ForumThreadView.user_id == current_user.id,
+            ForumThreadView.thread_id.in_(thread_ids),
+        )
+    )
+    views = {
+        view.thread_id: view.last_viewed_at for view in views_result.scalars().all()
+    }
+
+    latest_posts_result = await db.execute(
+        select(ForumPost.thread_id, func.max(ForumPost.created_at).label("latest_post"))
+        .where(ForumPost.thread_id.in_(thread_ids))
+        .group_by(ForumPost.thread_id)
+    )
+    latest_posts = {
+        thread_id: latest_post for thread_id, latest_post in latest_posts_result.all()
+    }
+
+    unread_status = {}
+    for thread_id in thread_ids:
+        last_viewed = views.get(thread_id)
+        latest_post = latest_posts.get(thread_id)
+
+        if last_viewed is None:
+            unread_status[thread_id] = True
+        elif latest_post is None:
+            unread_status[thread_id] = False
+        else:
+            unread_status[thread_id] = latest_post > last_viewed
+
+    return unread_status
 
 
 @router.get(
@@ -447,19 +503,63 @@ async def get_thread_posts(
             status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
-    query = (
+    all_posts_query = (
         select(ForumPost)
         .where(ForumPost.thread_id == thread_id)
         .options(selectinload(ForumPost.author))
-        .order_by(ForumPost.created_at.asc())
-        .offset(skip)
-        .limit(limit)
+        .order_by(ForumPost.created_at.desc())
+        .limit(500)
     )
 
-    result = await db.execute(query)
-    posts = result.scalars().all()
+    all_posts_result = await db.execute(all_posts_query)
+    all_posts = list(all_posts_result.scalars().all())
+    all_posts.reverse()
 
-    return [ForumPostRead.model_validate(post) for post in posts]
+    posts_map = {post.id: post for post in all_posts}
+
+    def build_quoted_chain(post, depth=0, visited=None):
+        if visited is None:
+            visited = set()
+
+        if post.id in visited or depth > 50:
+            return
+
+        visited.add(post.id)
+
+        if post.quoted_post_id:
+            if post.quoted_post_id in posts_map:
+                quoted = posts_map[post.quoted_post_id]
+                post.quoted_post = quoted
+                build_quoted_chain(quoted, depth + 1, visited)
+            else:
+                deleted_post = type(
+                    "obj",
+                    (object,),
+                    {
+                        "id": post.quoted_post_id,
+                        "content": "<p><em>[Zitierter Post nicht verfügbar - möglicherweise gelöscht oder zu alt]</em></p>",
+                        "created_at": post.created_at,
+                        "author": type(
+                            "obj",
+                            (object,),
+                            {
+                                "id": 0,
+                                "display_name": "[Gelöscht]",
+                                "profile_image_url": None,
+                            },
+                        )(),
+                        "thread_id": thread_id,
+                        "quoted_post": None,
+                    },
+                )()
+                post.quoted_post = deleted_post
+
+    for post in all_posts:
+        build_quoted_chain(post)
+
+    paginated_posts = all_posts[skip : skip + limit]
+
+    return [ForumPostRead.model_validate(post) for post in paginated_posts]
 
 
 @router.post(
@@ -492,7 +592,11 @@ async def create_post(
             detail=f"Post content flagged: {', '.join(moderation_result['reasons'])}",
         )
 
-    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
+    result = await db.execute(
+        select(ForumThread)
+        .options(selectinload(ForumThread.creator))
+        .where(ForumThread.id == thread_id)
+    )
     thread = result.scalar_one_or_none()
 
     if not thread:
@@ -505,14 +609,55 @@ async def create_post(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Thread is locked"
         )
 
+    quoted_post = None
+    if post_data.quoted_post_id:
+        result = await db.execute(
+            select(ForumPost)
+            .options(selectinload(ForumPost.author))
+            .where(
+                ForumPost.id == post_data.quoted_post_id,
+                ForumPost.thread_id == thread_id,
+            )
+        )
+        quoted_post = result.scalar_one_or_none()
+
+        if not quoted_post:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quoted post not found or not in this thread",
+            )
+
+    mentioned_user_ids = extract_mentions(post_data.content)
+
     post_dict = post_data.model_dump()
     post_dict["thread_id"] = thread_id
     post_dict["author_id"] = current_user.id
+    post_dict["mentioned_user_ids"] = mentioned_user_ids if mentioned_user_ids else None
 
     db_post = ForumPost(**post_dict)
     db.add(db_post)
-    await db.commit()
+    await db.flush()
     await db.refresh(db_post, ["author"])
+
+    notification_service = NotificationService()
+
+    if thread.creator_id != current_user.id:
+        _ = await notification_service.create_forum_reply_notification(
+            db, thread, db_post, current_user
+        )
+
+    if mentioned_user_ids:
+        _ = await notification_service.create_forum_mention_notifications(
+            db, thread, db_post, mentioned_user_ids, current_user
+        )
+
+    if quoted_post and quoted_post.author_id != current_user.id:
+        _ = await notification_service.create_forum_quote_notification(
+            db, thread, db_post, quoted_post, current_user
+        )
+
+    await db.commit()
+    await db.refresh(db_post, ["author", "quoted_post"])
 
     if moderation_result["requires_review"]:
         background_tasks.add_task(
@@ -615,3 +760,38 @@ async def get_flagged_content(
     )
 
     return {"flagged_posts": flagged_posts[:limit], "total_flagged": len(flagged_posts)}
+
+
+@router.post(
+    "/{thread_id}/mark-read",
+    summary="Mark thread as read",
+)
+async def mark_thread_as_read(
+    thread_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
+    thread = result.scalar_one_or_none()
+
+    if not thread:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
+        )
+    try:
+        stmt = pg_insert(ForumThreadView).values(
+            user_id=current_user.id, thread_id=thread_id, last_viewed_at=func.now()
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["user_id", "thread_id"], set_={"last_viewed_at": func.now()}
+        )
+    except:
+        stmt = mysql_insert(ForumThreadView).values(
+            user_id=current_user.id, thread_id=thread_id, last_viewed_at=func.now()
+        )
+        stmt = stmt.on_duplicate_key_update(last_viewed_at=func.now())
+
+    _ = await db.execute(stmt)
+    await db.commit()
+
+    return {"message": "Thread marked as read"}

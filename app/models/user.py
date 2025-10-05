@@ -43,6 +43,9 @@ class User(Base):
     email_notifications_messages: Mapped[bool] = mapped_column(Boolean, default=False)
     email_notifications_newsletter: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    notifications: Mapped[list["Notification"]] = relationship(
+        "Notification", back_populates="user", cascade="all, delete-orphan"
+    )
     events: Mapped[list["Event"]] = relationship("Event", back_populates="creator")
     participations: Mapped[list["EventParticipation"]] = relationship(
         "EventParticipation", back_populates="user"

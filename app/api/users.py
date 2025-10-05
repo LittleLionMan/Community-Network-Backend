@@ -13,7 +13,14 @@ from pathlib import Path
 
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import UserCreate, UserUpdate, UserPublic, UserPrivate, UserAdmin
+from app.schemas.user import (
+    UserCreate,
+    UserUpdate,
+    UserPublic,
+    UserPrivate,
+    UserAdmin,
+    UserSummary,
+)
 from app.services.privacy import PrivacyService
 from app.services.file_service import FileUploadService
 from app.core.dependencies import get_current_active_user, get_optional_current_user
@@ -90,6 +97,29 @@ async def list_users_admin(
     users = result.scalars().all()
 
     return users
+
+
+@router.get("/search", response_model=list[UserSummary])
+@read_rate_limit("user_search")
+async def search_users_for_mentions(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    q: Annotated[str, Query(min_length=2, max_length=50)] = "",
+    limit: Annotated[int, Query(ge=1, le=20)] = 10,
+):
+    if not q or len(q) < 2:
+        return []
+
+    query = (
+        select(User)
+        .where(User.is_active, User.display_name.ilike(f"%{q}%"))
+        .order_by(User.display_name)
+        .limit(limit)
+    )
+
+    result = await db.execute(query)
+    users = result.scalars().all()
+
+    return [UserSummary.model_validate(user) for user in users]
 
 
 @router.get("/{user_id}", response_model=UserPublic | UserPrivate)

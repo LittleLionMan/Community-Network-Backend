@@ -76,8 +76,20 @@ class ForumThreadRead(BaseModel):
     latest_post: datetime | None = None
 
 
+class QuotedPostSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    content: str
+    created_at: datetime
+    author: UserSummary
+    thread_id: int
+    quoted_post: "QuotedPostSummary | None" = None
+
+
 class ForumPostCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
+    quoted_post_id: int | None = None
 
 
 class ForumPostUpdate(BaseModel):
@@ -93,7 +105,11 @@ class ForumPostRead(BaseModel):
     updated_at: datetime | None = None
     author: UserSummary
     thread_id: int
+    quoted_post: QuotedPostSummary | None = None
+    mentioned_user_ids: list[int] | None = None
 
 
 _ = ForumCategoryRead.model_rebuild()
 _ = ForumThreadRead.model_rebuild()
+_ = ForumPostRead.model_rebuild()
+_ = QuotedPostSummary.model_rebuild()

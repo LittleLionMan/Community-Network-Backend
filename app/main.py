@@ -20,7 +20,6 @@ from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.services.scheduler_service import scheduler_service
 from app.core.logging import SecurityLogger
-from app.api import admin_rate_limits
 from app.core.monitoring import rate_limit_monitor
 from app.core.middleware import setup_middleware
 from app.core.background_tasks import (
@@ -41,6 +40,8 @@ from app.api import (
     forum_categories,
     messages,
     admin_security,
+    admin_rate_limits,
+    notifications,
 )
 from app.models.user import User
 from app.models.event import Event
@@ -123,6 +124,9 @@ app.include_router(
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(admin_security.router, prefix="/api", tags=["admin-security"])
 app.include_router(admin_rate_limits.router, prefix="/api")
+app.include_router(
+    notifications.router, prefix="/api/notifications", tags=["notifications"]
+)
 
 
 @app.get("/health")
@@ -507,7 +511,7 @@ async def trigger_cleanup(
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(exc: Exception):
+async def global_exception_handler(_request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
 
     return JSONResponse(
