@@ -50,3 +50,9 @@ class NotificationStats(BaseModel):
     total_unread: int
     unread_by_type: dict[str, int]
     latest_notifications: list[NotificationRead]
+
+
+class NotificationPrivacySettings(BaseModel):
+    forum_reply_enabled: bool = True
+    forum_mention_enabled: bool = True
+    forum_quote_enabled: bool = True

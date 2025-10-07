@@ -1,11 +1,18 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import re
 
 from app.models.notification import Notification
 from app.models.forum import ForumPost, ForumThread
 from app.models.user import User
 from app.schemas.user import UserSummary
 from app.services.websocket_service import websocket_manager
+
+
+def strip_html_tags(html: str) -> str:
+    clean = re.sub("<.*?>", "", html)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
 
 
 class NotificationService:
@@ -19,11 +26,19 @@ class NotificationService:
         if thread.creator_id == actor.id:
             return None
 
+        creator_result = await db.execute(
+            select(User).where(User.id == thread.creator_id, User.is_active)
+        )
+        creator = creator_result.scalar_one_or_none()
+
+        if not creator or not creator.notification_forum_reply:
+            return None
+
         notification_data = {
             "thread_id": thread.id,
             "post_id": new_post.id,
             "thread_title": thread.title,
-            "content_preview": new_post.content[:200],
+            "content_preview": strip_html_tags(new_post.content)[:200],
             "actor": UserSummary.model_validate(actor).model_dump(mode="json"),
         }
 
@@ -71,14 +86,14 @@ class NotificationService:
             )
             user = result.scalar_one_or_none()
 
-            if not user:
+            if not user or not user.notification_forum_mention:
                 continue
 
             notification_data = {
                 "thread_id": thread.id,
                 "post_id": post.id,
                 "thread_title": thread.title,
-                "content_preview": post.content[:200],
+                "content_preview": strip_html_tags(post.content)[:200],
                 "actor": UserSummary.model_validate(actor).model_dump(mode="json"),
             }
 
@@ -120,12 +135,20 @@ class NotificationService:
         if quoted_post.author_id == actor.id:
             return None
 
+        author_result = await db.execute(
+            select(User).where(User.id == quoted_post.author_id, User.is_active)
+        )
+        author = author_result.scalar_one_or_none()
+
+        if not author or not author.notification_forum_quote:
+            return None
+
         notification_data = {
             "thread_id": thread.id,
             "post_id": new_post.id,
             "quoted_post_id": quoted_post.id,
             "thread_title": thread.title,
-            "content_preview": new_post.content[:200],
+            "content_preview": strip_html_tags(new_post.content)[:200],
             "actor": UserSummary.model_validate(actor).model_dump(mode="json"),
         }
 

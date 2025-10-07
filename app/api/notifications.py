@@ -11,6 +11,7 @@ from app.schemas.notification import (
     NotificationUpdate,
     NotificationStats,
     NotificationType,
+    NotificationPrivacySettings,
 )
 from app.core.dependencies import get_current_user
 from app.core.rate_limit_decorator import read_rate_limit
@@ -65,7 +66,6 @@ async def get_notification_stats(
     )
     total_unread = unread_count_result.scalar() or 0
 
-    # Unread count by type
     unread_by_type_result = await db.execute(
         select(Notification.type, func.count(Notification.id))
         .where(
@@ -93,6 +93,45 @@ async def get_notification_stats(
         latest_notifications=[
             NotificationRead.model_validate(n) for n in latest_notifications
         ],
+    )
+
+
+@router.get(
+    "/privacy-settings",
+    response_model=NotificationPrivacySettings,
+    summary="Get notification privacy settings",
+)
+async def get_notification_privacy_settings(
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    return NotificationPrivacySettings(
+        forum_reply_enabled=current_user.notification_forum_reply,
+        forum_mention_enabled=current_user.notification_forum_mention,
+        forum_quote_enabled=current_user.notification_forum_quote,
+    )
+
+
+@router.put(
+    "/privacy-settings",
+    response_model=NotificationPrivacySettings,
+    summary="Update notification privacy settings",
+)
+async def update_notification_privacy_settings(
+    settings: NotificationPrivacySettings,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    current_user.notification_forum_reply = settings.forum_reply_enabled
+    current_user.notification_forum_mention = settings.forum_mention_enabled
+    current_user.notification_forum_quote = settings.forum_quote_enabled
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return NotificationPrivacySettings(
+        forum_reply_enabled=current_user.notification_forum_reply,
+        forum_mention_enabled=current_user.notification_forum_mention,
+        forum_quote_enabled=current_user.notification_forum_quote,
     )
 
 

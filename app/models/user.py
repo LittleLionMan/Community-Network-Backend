@@ -38,6 +38,9 @@ class User(Base):
     messages_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     messages_from_strangers: Mapped[bool] = mapped_column(Boolean, default=True)
     messages_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    notification_forum_reply: Mapped[bool] = mapped_column(Boolean, default=True)
+    notification_forum_mention: Mapped[bool] = mapped_column(Boolean, default=True)
+    notification_forum_quote: Mapped[bool] = mapped_column(Boolean, default=True)
 
     email_notifications_events: Mapped[bool] = mapped_column(Boolean, default=True)
     email_notifications_messages: Mapped[bool] = mapped_column(Boolean, default=False)
