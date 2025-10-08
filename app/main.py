@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, text
 from dotenv import load_dotenv
 from pathlib import Path
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 env_path = Path(__file__).resolve().parent.parent / ".env"
 _ = load_dotenv(dotenv_path=env_path)
@@ -87,6 +91,31 @@ async def lifespan(_app: FastAPI):
         logger.error(f"❌ Shutdown error: {e}")
 
 
+if settings.SENTRY_DSN:
+    _ = sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        traces_sample_rate=1.0 if settings.DEBUG else 0.1,
+        profiles_sample_rate=1.0 if settings.DEBUG else 0.1,
+        environment=settings.ENVIRONMENT,
+        release=f"community-platform@{settings.VERSION}",
+        integrations=[
+            FastApiIntegration(transaction_style="endpoint"),
+            StarletteIntegration(transaction_style="endpoint"),
+            SqlalchemyIntegration(),
+        ],
+        ignore_errors=[
+            KeyboardInterrupt,
+        ],
+        send_default_pii=False,
+        enable_tracing=True,
+        attach_stacktrace=True,
+    )
+
+    logger.info(f"✅ Sentry initialized for environment: {settings.ENVIRONMENT}")
+else:
+    logger.info("⚠️  Sentry DSN not configured - error tracking disabled")
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.VERSION,
@@ -100,7 +129,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

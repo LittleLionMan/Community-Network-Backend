@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 import os
+
 
 def _get_secret_key() -> str:
     key = os.getenv("SECRET_KEY")
@@ -8,29 +9,39 @@ def _get_secret_key() -> str:
         raise ValueError("SECRET_KEY environment variable is required")
     return key
 
+
 def _get_database_url() -> str:
     url = os.getenv("DATABASE_URL")
     if not url:
         raise ValueError("DATABASE_URL environment variable is required")
     return url
 
+
 class Settings(BaseSettings):
     APP_NAME: str = "Community Platform API"
     VERSION: str = "1.0.0"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
-    SECRET_KEY: str = Field(default_factory=_get_secret_key, description="Secret key for JWT tokens")
+    SECRET_KEY: str = Field(
+        default_factory=_get_secret_key, description="Secret key for JWT tokens"
+    )
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
-    DATABASE_URL: str = Field(default_factory=_get_database_url, description="Database connection URL")
+    DATABASE_URL: str = Field(
+        default_factory=_get_database_url, description="Database connection URL"
+    )
     REDIS_URL: str = "redis://localhost:6379/0"
     UPLOAD_DIR: str = "/app/uploads"
     MAX_FILE_SIZE: int = 5242880
     ALLOWED_IMAGE_EXTENSIONS: str = ".jpg,.jpeg,.png,.gif,.webp"
 
-    BACKEND_CORS_ORIGINS: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8080", "http://127.0.0.1:3000"]
+    CORS_ORIGINS: str = Field(
+        default="http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000",
+        description="Comma-separated list of allowed origins",
     )
+    CORS_ALLOW_CREDENTIALS: bool = True
+    CORS_ALLOW_METHODS: list[str] = Field(default=["*"])
+    CORS_ALLOW_HEADERS: list[str] = Field(default=["*"])
 
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 10
@@ -75,44 +86,55 @@ class Settings(BaseSettings):
     DOCS_ENABLED: bool = True
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=True,
-        env_file_encoding="utf-8",
-        extra="ignore"
+        env_file=".env", case_sensitive=True, env_file_encoding="utf-8", extra="ignore"
     )
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def validate_cors_origins(cls, v: str) -> str:
+        if not v:
+            raise ValueError("CORS_ORIGINS cannot be empty")
+
+        origins = [origin.strip() for origin in v.split(",")]
+        for origin in origins:
+            if not origin.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"Invalid CORS origin format: {origin}. Must start with http:// or https://"
+                )
+
+        return v
 
     @property
     def is_production(self) -> bool:
-        return self.ENVIRONMENT.lower() == 'production'
+        return self.ENVIRONMENT.lower() == "production"
 
     @property
     def is_development(self) -> bool:
-        return self.ENVIRONMENT.lower() == 'development'
+        return self.ENVIRONMENT.lower() == "development"
 
     @property
     def allowed_image_types(self) -> list[str]:
-        return [ext.strip() for ext in self.ALLOWED_IMAGE_EXTENSIONS.split(',')]
+        return [ext.strip() for ext in self.ALLOWED_IMAGE_EXTENSIONS.split(",")]
 
     @property
-    def cors_origins(self) -> list[str]:
-        if self.is_development:
-            return [
-                "http://localhost:3000",
-                "http://localhost:8080",
-                "http://127.0.0.1:3000"
-            ]
-        else:
-            cors_env = os.getenv("CORS_ORIGINS", "")
-            if cors_env:
-                return [origin.strip() for origin in cors_env.split(",") if origin.strip()]
-            return self.BACKEND_CORS_ORIGINS
+    def cors_origins_list(self) -> list[str]:
+        return [
+            origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()
+        ]
 
-settings = Settings() # type: ignore[call-arg]
+    @property
+    def backend_cors_origins(self) -> list[str]:
+        return self.cors_origins_list
+
+
+settings = Settings()  # type: ignore[call-arg]
+
 
 def _validate_settings() -> None:
-    if not os.getenv('SKIP_CONFIG_VALIDATION'):
+    if not os.getenv("SKIP_CONFIG_VALIDATION"):
         from .core.config_validator import EnvironmentValidator
+
         EnvironmentValidator.validate_or_exit()
 
-# Automatische Validierung beim Import
+
 _validate_settings()

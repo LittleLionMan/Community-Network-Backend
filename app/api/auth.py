@@ -101,6 +101,7 @@ async def register(
     response_model=TokenResponse,
     responses={
         401: {"model": ErrorResponse, "description": "Invalid credentials"},
+        403: {"model": ErrorResponse, "description": "Account inactive"},
         423: {"model": ErrorResponse, "description": "Account temporarily locked"},
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
     },
@@ -166,7 +167,7 @@ async def login(
         )
 
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is deactivated"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated"
         )
 
     if not user.email_verified:

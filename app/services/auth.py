@@ -6,10 +6,18 @@ from ..models.user import User
 from ..models.auth import RefreshToken, EmailVerificationToken, PasswordResetToken
 from ..schemas.auth import UserRegister, TokenResponse
 from ..core.auth import (
-    verify_password, get_password_hash, create_access_token, create_refresh_token,
-    hash_token, send_email, generate_verification_email, generate_password_reset_email,
-    ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    create_refresh_token,
+    hash_token,
+    send_email,
+    generate_verification_email,
+    generate_password_reset_email,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
+
 
 class AuthService:
     db: AsyncSession
@@ -20,7 +28,8 @@ class AuthService:
     async def register_user(self, user_data: UserRegister) -> User:
         result = await self.db.execute(
             select(User).where(
-                (User.email == user_data.email) | (User.display_name == user_data.display_name)
+                (User.email == user_data.email)
+                | (User.display_name == user_data.display_name)
             )
         )
         existing_user = result.scalar_one_or_none()
@@ -29,12 +38,12 @@ class AuthService:
             if existing_user.email == user_data.email:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email already registered"
+                    detail="Email already registered",
                 )
             else:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Display name already taken"
+                    detail="Display name already taken",
                 )
 
         hashed_password = get_password_hash(user_data.password)
@@ -46,7 +55,7 @@ class AuthService:
             last_name=user_data.last_name,
             email_verified=False,
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
 
         self.db.add(db_user)
@@ -63,8 +72,6 @@ class AuthService:
 
         if not user or not verify_password(password, user.password_hash):
             return None
-        if not user.is_active:
-            return None
         return user
 
     async def create_tokens(self, user: User) -> TokenResponse:
@@ -76,8 +83,9 @@ class AuthService:
         db_refresh_token = RefreshToken(
             token_hash=refresh_token_hash,
             user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-            is_revoked=False
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+            is_revoked=False,
         )
         self.db.add(db_refresh_token)
         await self.db.commit()
@@ -85,7 +93,7 @@ class AuthService:
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
 
     async def refresh_access_token(self, refresh_token: str) -> TokenResponse:
@@ -95,24 +103,25 @@ class AuthService:
             select(RefreshToken).where(
                 RefreshToken.token_hash == refresh_token_hash,
                 RefreshToken.is_revoked == False,
-                RefreshToken.expires_at > datetime.now(timezone.utc)
+                RefreshToken.expires_at > datetime.now(timezone.utc),
             )
         )
         db_refresh_token = result.scalar_one_or_none()
 
         if not db_refresh_token:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
             )
 
-        result = await self.db.execute(select(User).where(User.id == db_refresh_token.user_id))
+        result = await self.db.execute(
+            select(User).where(User.id == db_refresh_token.user_id)
+        )
         user = result.scalar_one_or_none()
 
         if not user or not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or inactive"
+                detail="User not found or inactive",
             )
 
         _ = await self.db.execute(
@@ -131,7 +140,7 @@ class AuthService:
             await self.db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Token refresh failed"
+                detail="Token refresh failed",
             )
 
     async def revoke_refresh_token(self, user_id: int, refresh_token: str) -> bool:
@@ -141,7 +150,7 @@ class AuthService:
             select(RefreshToken).where(
                 RefreshToken.token_hash == refresh_token_hash,
                 RefreshToken.user_id == user_id,
-                RefreshToken.is_revoked == False
+                RefreshToken.is_revoked == False,
             )
         )
         db_refresh_token = result.scalar_one_or_none()
@@ -172,7 +181,7 @@ class AuthService:
             update(RefreshToken)
             .where(
                 RefreshToken.expires_at < datetime.now(timezone.utc),
-                RefreshToken.is_revoked == False
+                RefreshToken.is_revoked == False,
             )
             .values(is_revoked=True)
         )
@@ -188,7 +197,7 @@ class AuthService:
             select(EmailVerificationToken).where(
                 EmailVerificationToken.token_hash == token_hash,
                 EmailVerificationToken.is_used == False,
-                EmailVerificationToken.expires_at > datetime.now(timezone.utc)
+                EmailVerificationToken.expires_at > datetime.now(timezone.utc),
             )
         )
         db_token = result.scalar_one_or_none()
@@ -196,7 +205,7 @@ class AuthService:
         if not db_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired verification token"
+                detail="Invalid or expired verification token",
             )
 
         result = await self.db.execute(select(User).where(User.id == db_token.user_id))
@@ -230,7 +239,7 @@ class AuthService:
         db_token = PasswordResetToken(
             token_hash=token_hash,
             user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         self.db.add(db_token)
         await self.db.commit()
@@ -247,7 +256,7 @@ class AuthService:
             select(PasswordResetToken).where(
                 PasswordResetToken.token_hash == token_hash,
                 PasswordResetToken.is_used == False,
-                PasswordResetToken.expires_at > datetime.now(timezone.utc)
+                PasswordResetToken.expires_at > datetime.now(timezone.utc),
             )
         )
         db_token = result.scalar_one_or_none()
@@ -255,7 +264,7 @@ class AuthService:
         if not db_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired reset token"
+                detail="Invalid or expired reset token",
             )
 
         result = await self.db.execute(select(User).where(User.id == db_token.user_id))
@@ -313,7 +322,7 @@ class AuthService:
         db_token = EmailVerificationToken(
             token_hash=token_hash,
             user_id=user.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24)
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
         )
         self.db.add(db_token)
         await self.db.commit()
@@ -323,9 +332,7 @@ class AuthService:
 
     async def update_user_password(self, user_id: int, new_password: str) -> bool:
         try:
-            result = await self.db.execute(
-                select(User).where(User.id == user_id)
-            )
+            result = await self.db.execute(select(User).where(User.id == user_id))
             user = result.scalar_one_or_none()
 
             if not user:

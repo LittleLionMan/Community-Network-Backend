@@ -6,6 +6,7 @@ from fastapi import (
     File,
     UploadFile,
     Query,
+    Request,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -23,9 +24,14 @@ from app.schemas.user import (
 )
 from app.services.privacy import PrivacyService
 from app.services.file_service import FileUploadService
-from app.core.dependencies import get_current_active_user, get_optional_current_user
+from app.core.dependencies import (
+    get_current_active_user,
+    get_optional_current_user,
+    get_current_admin_user,
+)
 from app.core.rate_limit_decorator import read_rate_limit
 from app.core.auth import get_password_hash
+from app.core.logging import SecurityLogger
 from typing import Annotated
 
 router = APIRouter()
@@ -65,40 +71,6 @@ async def create_user(user: UserCreate, db: Annotated[AsyncSession, Depends(get_
     return UserPrivate.model_validate(db_user)
 
 
-@router.get("/admin-list", response_model=list[UserAdmin])
-async def list_users_admin(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    skip: int = 0,
-    limit: int = 100,
-    search: str | None = None,
-    is_active: bool | None = None,
-    is_admin: bool | None = None,
-    email_verified: bool | None = None,
-):
-    query = select(User)
-
-    if search:
-        query = query.where(
-            User.display_name.ilike(f"%{search}%")
-            | User.first_name.ilike(f"%{search}%")
-            | User.last_name.ilike(f"%{search}%")
-            | User.email.ilike(f"%{search}%")
-        )
-
-    if is_active is not None:
-        query = query.where(User.is_active == is_active)
-    if is_admin is not None:
-        query = query.where(User.is_admin == is_admin)
-    if email_verified is not None:
-        query = query.where(User.email_verified == email_verified)
-
-    query = query.offset(skip).limit(limit)
-    result = await db.execute(query)
-    users = result.scalars().all()
-
-    return users
-
-
 @router.get("/search", response_model=list[UserSummary])
 @read_rate_limit("user_search")
 async def search_users_for_mentions(
@@ -120,27 +92,6 @@ async def search_users_for_mentions(
     users = result.scalars().all()
 
     return [UserSummary.model_validate(user) for user in users]
-
-
-@router.get("/{user_id}", response_model=UserPublic | UserPrivate)
-@read_rate_limit("user_profile")
-async def get_user(
-    user_id: int,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User | None, Depends(get_optional_current_user)],
-):
-    viewer_id = current_user.id if current_user else None
-
-    user_data = await PrivacyService.get_user_for_viewer(
-        db=db, user_id=user_id, viewer_id=viewer_id
-    )
-
-    if not user_data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
-
-    return user_data
 
 
 @router.put("/me", response_model=UserPrivate)
@@ -317,3 +268,178 @@ async def get_user_stats(
 @router.get("/me/activities")
 async def get_user_activities() -> dict[str, list[dict[str, object]]]:
     return {"recent_events": [], "active_services": [], "recent_forum_posts": []}
+
+
+@router.get("/admin-list", response_model=list[UserAdmin])
+async def list_users_admin(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: int = 0,
+    limit: int = 100,
+    search: str | None = None,
+    is_active: bool | None = None,
+    is_admin: bool | None = None,
+    email_verified: bool | None = None,
+):
+    query = select(User)
+
+    if search:
+        query = query.where(
+            User.display_name.ilike(f"%{search}%")
+            | User.first_name.ilike(f"%{search}%")
+            | User.last_name.ilike(f"%{search}%")
+            | User.email.ilike(f"%{search}%")
+        )
+
+    if is_active is not None:
+        query = query.where(User.is_active == is_active)
+    if is_admin is not None:
+        query = query.where(User.is_admin == is_admin)
+    if email_verified is not None:
+        query = query.where(User.email_verified == email_verified)
+
+    query = query.offset(skip).limit(limit)
+    result = await db.execute(query)
+    users = result.scalars().all()
+
+    return users
+
+
+@router.post("/{user_id}/admin/deactivate")
+async def deactivate_user(
+    request: Request,
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    reason: Annotated[str | None, Query(description="Reason for deactivation")] = None,
+):
+    if user_id == current_admin.id:
+        raise HTTPException(
+            status_code=400, detail="You cannot deactivate your own account"
+        )
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.is_active:
+        raise HTTPException(status_code=400, detail="User is already deactivated")
+
+    user.is_active = False
+
+    SecurityLogger.log_admin_action(
+        request,
+        admin_user_id=current_admin.id,
+        action="deactivate_user",
+        target_user_id=user_id,
+        details={"reason": reason, "target_user_name": user.display_name},
+    )
+
+    await db.commit()
+
+    return {
+        "message": f"User {user.display_name} deactivated successfully",
+        "user_id": user_id,
+        "admin_user": current_admin.display_name,
+    }
+
+
+@router.post("/{user_id}/admin/activate")
+async def activate_user(
+    request: Request,
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.is_active:
+        raise HTTPException(status_code=400, detail="User is already active")
+
+    user.is_active = True
+
+    SecurityLogger.log_admin_action(
+        request,
+        admin_user_id=current_admin.id,
+        action="activate_user",
+        target_user_id=user_id,
+        details={"target_user_name": user.display_name},
+    )
+
+    await db.commit()
+
+    return {
+        "message": f"User {user.display_name} activated successfully",
+        "user_id": user_id,
+        "admin_user": current_admin.display_name,
+    }
+
+
+@router.put("/{user_id}/admin/admin-status")
+async def update_admin_status(
+    request: Request,
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    is_admin: Annotated[bool, Query(description="Set admin status")] = False,
+):
+    if user_id == current_admin.id:
+        raise HTTPException(
+            status_code=400, detail="You cannot modify your own admin status"
+        )
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    old_status = user.is_admin
+    user.is_admin = is_admin
+
+    SecurityLogger.log_admin_action(
+        request,
+        admin_user_id=current_admin.id,
+        action="update_admin_status",
+        target_user_id=user_id,
+        details={
+            "target_user_name": user.display_name,
+            "old_admin_status": old_status,
+            "new_admin_status": is_admin,
+        },
+    )
+
+    await db.commit()
+
+    return {
+        "message": f"Admin status for {user.display_name} updated successfully",
+        "user_id": user_id,
+        "is_admin": is_admin,
+        "admin_user": current_admin.display_name,
+    }
+
+
+@router.get("/{user_id}", response_model=UserPublic | UserPrivate)
+@read_rate_limit("user_profile")
+async def get_user(
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_current_user)],
+):
+    viewer_id = current_user.id if current_user else None
+
+    user_data = await PrivacyService.get_user_for_viewer(
+        db=db, user_id=user_id, viewer_id=viewer_id
+    )
+
+    if not user_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    return user_data
