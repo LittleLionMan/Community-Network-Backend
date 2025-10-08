@@ -76,6 +76,7 @@ class ForumPost(Base):
         foreign_keys=[quoted_post_id],
         backref="quoting_posts",
     )
+    has_achievement: bool = False
 
 
 class ForumThreadView(Base):

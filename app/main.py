@@ -46,6 +46,7 @@ from app.api import (
     admin_security,
     admin_rate_limits,
     notifications,
+    achievements,
 )
 from app.models.user import User
 from app.models.event import Event
@@ -156,6 +157,7 @@ app.include_router(admin_rate_limits.router, prefix="/api")
 app.include_router(
     notifications.router, prefix="/api/notifications", tags=["notifications"]
 )
+app.include_router(achievements.router, prefix="/api", tags=["achievements"])
 
 
 @app.get("/health")

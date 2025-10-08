@@ -9,6 +9,7 @@ from .poll import Poll, PollOption, Vote
 from .enums import ParticipationStatus, PollType
 from .message import Conversation, ConversationParticipant, Message, MessageReadReceipt
 from .notification import Notification
+from .achievement import UserAchievement
 
 __all__ = [
     "Base",
@@ -34,4 +35,5 @@ __all__ = [
     "Message",
     "MessageReadReceipt",
     "Notification",
+    "UserAchievement",
 ]

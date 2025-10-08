@@ -107,6 +107,7 @@ class ForumPostRead(BaseModel):
     thread_id: int
     quoted_post: QuotedPostSummary | None = None
     mentioned_user_ids: list[int] | None = None
+    has_achievement: bool = False
 
 
 _ = ForumCategoryRead.model_rebuild()

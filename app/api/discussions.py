@@ -10,6 +10,7 @@ import re
 from app.database import get_db
 from app.models.forum import ForumThread, ForumPost, ForumCategory, ForumThreadView
 from app.models.user import User
+from app.models.achievement import UserAchievement
 from app.schemas.forum import (
     ForumThreadCreate,
     ForumThreadRead,
@@ -29,6 +30,28 @@ from app.services.moderation_service import ModerationService
 from app.services.notification_service import NotificationService
 
 router = APIRouter()
+
+
+async def _enrich_posts_with_achievements(
+    posts: list[ForumPost], db: AsyncSession, achievement_type: str
+) -> None:
+    post_ids = [post.id for post in posts]
+
+    if not post_ids:
+        return
+
+    achievement_result = await db.execute(
+        select(UserAchievement.reference_id, UserAchievement.achievement_type).where(
+            UserAchievement.achievement_type == achievement_type,
+            UserAchievement.reference_type == "forum_post",
+            UserAchievement.reference_id.in_(post_ids),
+        )
+    )
+
+    achievement_post_ids = set(achievement_result.scalars().all())
+
+    for post in posts:
+        post.has_achievement = post.id in achievement_post_ids
 
 
 def extract_mentions(html_content: str) -> list[int]:
@@ -210,6 +233,7 @@ async def get_my_posts(
     db: Annotated[AsyncSession, Depends(get_db)],
     skip: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    check_achievement: Annotated[str | None, Query()] = None,
 ):
     query = (
         select(ForumPost)
@@ -222,8 +246,12 @@ async def get_my_posts(
 
     result = await db.execute(query)
     posts = result.scalars().all()
+    posts_list = list(posts)
 
-    return [ForumPostRead.model_validate(post) for post in posts]
+    if check_achievement:
+        await _enrich_posts_with_achievements(posts_list, db, "bug_bounty")
+
+    return [ForumPostRead.model_validate(post) for post in posts_list]
 
 
 async def _check_user_moderation_status(
@@ -494,6 +522,7 @@ async def get_thread_posts(
     db: Annotated[AsyncSession, Depends(get_db)],
     skip: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    check_achievement: Annotated[str | None, Query()] = None,
 ):
     result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
     thread = result.scalar_one_or_none()
@@ -558,6 +587,8 @@ async def get_thread_posts(
         build_quoted_chain(post)
 
     paginated_posts = all_posts[skip : skip + limit]
+    if check_achievement:
+        await _enrich_posts_with_achievements(paginated_posts, db, check_achievement)
 
     return [ForumPostRead.model_validate(post) for post in paginated_posts]
 
