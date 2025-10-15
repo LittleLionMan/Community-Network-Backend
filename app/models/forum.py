@@ -1,5 +1,15 @@
 from datetime import datetime
-from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, JSON
+from sqlalchemy import (
+    String,
+    Text,
+    Boolean,
+    Integer,
+    DateTime,
+    ForeignKey,
+    JSON,
+    UniqueConstraint,
+    Index,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
@@ -93,3 +103,11 @@ class ForumThreadView(Base):
 
     user: Mapped["User"] = relationship("User")
     thread: Mapped["ForumThread"] = relationship("ForumThread", back_populates="views")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "thread_id", name="uq_forum_thread_view_user_thread"
+        ),
+        Index("ix_forum_thread_views_user_id", "user_id"),
+        Index("ix_forum_thread_views_thread_id", "thread_id"),
+    )
