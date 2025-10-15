@@ -46,14 +46,6 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 10
 
-    SMTP_HOST: str | None = None
-    SMTP_PORT: int = 587
-    SMTP_USER: str | None = None
-    SMTP_PASSWORD: str | None = None
-    FROM_EMAIL: str = "noreply@community-platform.local"
-    EMAIL_ENABLED: bool = False
-    EMAIL_VERIFICATION_REQUIRED: bool = True
-
     GEOCODING_API_KEY: str | None = None
 
     CONTENT_MODERATION_ENABLED: bool = True
