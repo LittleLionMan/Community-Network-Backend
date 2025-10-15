@@ -8,6 +8,7 @@ from datetime import datetime
 from PIL import Image
 import uuid
 
+
 class FileUploadService:
     upload_base: Path
     profile_images_dir: Path
@@ -25,34 +26,36 @@ class FileUploadService:
         self.profile_images_dir.mkdir(parents=True, exist_ok=True)
         self.service_images_dir.mkdir(parents=True, exist_ok=True)
 
-        os.chmod(self.profile_images_dir, 0o755)
-        os.chmod(self.service_images_dir, 0o755)
-
         self.allowed_image_types = {
-            'image/jpeg', 'image/png', 'image/gif', 'image/webp'
+            "image/jpeg",
+            "image/png",
+            "image/gif",
+            "image/webp",
         }
 
         self.magic = python_magic.Magic(mime=True)
 
-    async def upload_profile_image(self, file: UploadFile, user_id: int) -> tuple[str, str]:
-        if hasattr(file, 'size') and file.size and file.size > self.max_file_size:
+    async def upload_profile_image(
+        self, file: UploadFile, user_id: int
+    ) -> tuple[str, str]:
+        if hasattr(file, "size") and file.size and file.size > self.max_file_size:
             raise HTTPException(
                 status_code=413,
-                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB"
+                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB",
             )
 
         content = await file.read()
         if len(content) > self.max_file_size:
             raise HTTPException(
                 status_code=413,
-                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB"
+                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB",
             )
 
         detected_mime = self.magic.from_buffer(content)
         if detected_mime not in self.allowed_image_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid file type. Allowed: {', '.join(self.allowed_image_types)}"
+                detail=f"Invalid file type. Allowed: {', '.join(self.allowed_image_types)}",
             )
 
         try:
@@ -60,15 +63,16 @@ class FileUploadService:
             image.verify()
 
             image = Image.open(io.BytesIO(content))
-            if image.mode in ('RGBA', 'LA', 'P'):
-                rgb_image = Image.new('RGB', image.size, (255, 255, 255))
-                rgb_image.paste(image, mask=image.split()[-1] if image.mode == 'RGBA' else None)
+            if image.mode in ("RGBA", "LA", "P"):
+                rgb_image = Image.new("RGB", image.size, (255, 255, 255))
+                rgb_image.paste(
+                    image, mask=image.split()[-1] if image.mode == "RGBA" else None
+                )
                 image = rgb_image
 
         except Exception:
             raise HTTPException(
-                status_code=400,
-                detail="Invalid or corrupted image file"
+                status_code=400, detail="Invalid or corrupted image file"
             )
 
         self._basic_security_checks(content)
@@ -81,8 +85,8 @@ class FileUploadService:
 
         await self._cleanup_old_profile_images(user_id)
 
-        with open(file_path, 'wb') as f:
-            image.save(f, format='JPEG', quality=85, optimize=True)
+        with open(file_path, "wb") as f:
+            image.save(f, format="JPEG", quality=85, optimize=True)
 
         os.chmod(file_path, 0o644)
 
@@ -90,21 +94,19 @@ class FileUploadService:
         return str(file_path), public_url
 
     def _basic_security_checks(self, content: bytes) -> None:
-
-        if content.startswith(b'MZ') or content.startswith(b'\x7fELF'):
+        if content.startswith(b"MZ") or content.startswith(b"\x7fELF"):
             raise HTTPException(
-                status_code=400,
-                detail="Executable files are not allowed"
+                status_code=400, detail="Executable files are not allowed"
             )
 
     def _get_safe_extension(self, mime_type: str) -> str:
         mime_to_ext = {
-            'image/jpeg': '.jpg',
-            'image/png': '.png',
-            'image/gif': '.gif',
-            'image/webp': '.webp'
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
         }
-        return mime_to_ext.get(mime_type, '.jpg')
+        return mime_to_ext.get(mime_type, ".jpg")
 
     async def _cleanup_old_profile_images(self, user_id: int) -> None:
         try:
@@ -116,13 +118,15 @@ class FileUploadService:
 
     async def delete_profile_image(self, image_url: str) -> bool:
         try:
-            if not image_url.startswith('/uploads/profile_images/'):
+            if not image_url.startswith("/uploads/profile_images/"):
                 return False
 
-            filename = image_url.split('/')[-1]
+            filename = image_url.split("/")[-1]
             file_path = self.profile_images_dir / filename
 
-            if not str(file_path.resolve()).startswith(str(self.profile_images_dir.resolve())):
+            if not str(file_path.resolve()).startswith(
+                str(self.profile_images_dir.resolve())
+            ):
                 return False
 
             if file_path.exists():
@@ -134,26 +138,27 @@ class FileUploadService:
 
         return False
 
-    async def upload_service_image(self, file: UploadFile, user_id: int) -> tuple[str, str]:
-
-        if hasattr(file, 'size') and file.size and file.size > self.max_file_size:
+    async def upload_service_image(
+        self, file: UploadFile, user_id: int
+    ) -> tuple[str, str]:
+        if hasattr(file, "size") and file.size and file.size > self.max_file_size:
             raise HTTPException(
                 status_code=413,
-                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB"
+                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB",
             )
 
         content = await file.read()
         if len(content) > self.max_file_size:
             raise HTTPException(
                 status_code=413,
-                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB"
+                detail=f"File too large. Maximum size: {self.max_file_size // 1024 // 1024}MB",
             )
 
         detected_mime = self.magic.from_buffer(content)
         if detected_mime not in self.allowed_image_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid file type. Allowed: {', '.join(self.allowed_image_types)}"
+                detail=f"Invalid file type. Allowed: {', '.join(self.allowed_image_types)}",
             )
 
         try:
@@ -162,9 +167,9 @@ class FileUploadService:
 
             image = Image.open(io.BytesIO(content))
 
-            if image.mode in ('RGBA', 'LA', 'P'):
-                rgb_image = Image.new('RGB', image.size, (255, 255, 255))
-                if image.mode == 'RGBA':
+            if image.mode in ("RGBA", "LA", "P"):
+                rgb_image = Image.new("RGB", image.size, (255, 255, 255))
+                if image.mode == "RGBA":
                     rgb_image.paste(image, mask=image.split()[-1])
                 else:
                     rgb_image.paste(image)
@@ -177,8 +182,7 @@ class FileUploadService:
         except Exception as e:
             print(f"Image processing error: {e}")
             raise HTTPException(
-                status_code=400,
-                detail="Invalid or corrupted image file"
+                status_code=400, detail="Invalid or corrupted image file"
             )
 
         self._basic_security_checks(content)
@@ -190,8 +194,8 @@ class FileUploadService:
 
         file_path = self.service_images_dir / filename
 
-        with open(file_path, 'wb') as f:
-            image.save(f, format='JPEG', quality=90, optimize=True)
+        with open(file_path, "wb") as f:
+            image.save(f, format="JPEG", quality=90, optimize=True)
 
         os.chmod(file_path, 0o644)
 
@@ -200,13 +204,15 @@ class FileUploadService:
 
     async def delete_service_image(self, image_url: str) -> bool:
         try:
-            if not image_url.startswith('/uploads/service_images/'):
+            if not image_url.startswith("/uploads/service_images/"):
                 return False
 
-            filename = image_url.split('/')[-1]
+            filename = image_url.split("/")[-1]
             file_path = self.service_images_dir / filename
 
-            if not str(file_path.resolve()).startswith(str(self.service_images_dir.resolve())):
+            if not str(file_path.resolve()).startswith(
+                str(self.service_images_dir.resolve())
+            ):
                 return False
 
             if file_path.exists():
@@ -218,7 +224,9 @@ class FileUploadService:
 
         return False
 
-    async def cleanup_orphaned_service_images(self, active_image_urls: list[str]) -> int:
+    async def cleanup_orphaned_service_images(
+        self, active_image_urls: list[str]
+    ) -> int:
         cleaned_count = 0
 
         try:
@@ -226,8 +234,8 @@ class FileUploadService:
 
             active_filenames: set[str] = set()
             for url in active_image_urls:
-                if url.startswith('/uploads/service_images/'):
-                    active_filenames.add(url.split('/')[-1])
+                if url.startswith("/uploads/service_images/"):
+                    active_filenames.add(url.split("/")[-1])
 
             for file_path in all_files:
                 if file_path.name not in active_filenames:
@@ -235,7 +243,9 @@ class FileUploadService:
                         file_path.unlink()
                         cleaned_count += 1
                     except Exception as e:
-                        print(f"Failed to delete orphaned service image {file_path}: {e}")
+                        print(
+                            f"Failed to delete orphaned service image {file_path}: {e}"
+                        )
 
         except Exception as e:
             print(f"Failed to cleanup orphaned service images: {e}")
@@ -251,12 +261,8 @@ class FileUploadService:
             return {
                 "total_service_images": total_files,
                 "total_size_mb": round(total_size / (1024 * 1024), 2),
-                "average_size_kb": round((total_size / max(1, total_files)) / 1024, 2)
+                "average_size_kb": round((total_size / max(1, total_files)) / 1024, 2),
             }
         except Exception as e:
             print(f"Failed to get service image stats: {e}")
-            return {
-                "total_service_images": 0,
-                "total_size_mb": 0,
-                "average_size_kb": 0
-            }
+            return {"total_service_images": 0, "total_size_mb": 0, "average_size_kb": 0}

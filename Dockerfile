@@ -19,7 +19,7 @@ COPY alembic.ini ./
 
 # Create directories with proper permissions BEFORE switching to app user
 RUN mkdir -p /app/uploads/profile_images /app/uploads/service_images /app/alembic/versions && \
-    chmod -R 777 /app/uploads /app/alembic
+    chmod -R 755 /app/uploads /app/alembic
 
 # Create non-root user and give ownership
 RUN useradd --create-home --shell /bin/bash app && \
