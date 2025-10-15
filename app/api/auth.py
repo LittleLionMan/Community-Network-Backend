@@ -8,7 +8,7 @@ from typing import Annotated
 
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
-from app.core.auth import verify_password
+from app.core.auth import verify_password, FRONTEND_URL
 from app.services.auth import AuthService
 from app.core.logging import SecurityLogger, rate_limiter, get_client_ip
 from app.schemas.auth import (
@@ -274,6 +274,117 @@ async def logout_all(
     )
 
 
+@router.get(
+    "/verify-email",
+    status_code=status.HTTP_200_OK,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid or expired token"}
+    },
+)
+@limiter.limit("10/minute")
+async def verify_email_get(
+    request: Request, token: str, db: Annotated[AsyncSession, Depends(get_db)]
+):
+    verification_data = EmailVerification(token=token)
+    auth_service = AuthService(db)
+
+    try:
+        success = await auth_service.verify_email(verification_data.token)
+
+        if success:
+            SecurityLogger.log_suspicious_activity(
+                request,
+                "email_verification_success",
+                details={"action": "email_verified"},
+            )
+
+            return HTMLResponse(f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>E-Mail bestätigt</title>
+                <meta charset="UTF-8">
+                <style>
+                    body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
+                    .success {{ color: green; }}
+                    .container {{ max-width: 500px; margin: 0 auto; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1 class="success">✅ E-Mail erfolgreich bestätigt!</h1>
+                    <p>Ihre E-Mail-Adresse wurde erfolgreich verifiziert.</p>
+                    <p>Sie können sich jetzt anmelden.</p>
+                    <p><a href="{FRONTEND_URL}/auth/login">Zur Anmeldung</a></p>
+                </div>
+            </body>
+            </html>
+            """)
+        else:
+            SecurityLogger.log_suspicious_activity(
+                request,
+                "email_verification_failed",
+                details={
+                    "action": "email_verification_failed",
+                    "reason": "invalid_token",
+                },
+            )
+
+            return HTMLResponse(
+                """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Verifizierung fehlgeschlagen</title>
+                <meta charset="UTF-8">
+                <style>
+                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+                    .error { color: red; }
+                    .container { max-width: 500px; margin: 0 auto; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1 class="error">❌ Verifizierung fehlgeschlagen</h1>
+                    <p>Der Verifizierungslink ist ungültig oder abgelaufen.</p>
+                    <p>Bitte fordern Sie einen neuen Link an.</p>
+                </div>
+            </body>
+            </html>
+            """,
+                status_code=400,
+            )
+    except HTTPException as e:
+        SecurityLogger.log_suspicious_activity(
+            request,
+            "email_verification_error",
+            details={"action": "email_verification_error", "error": str(e.detail)},
+        )
+        return HTMLResponse(
+            f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Fehler</title>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
+                .error {{ color: red; }}
+                .container {{ max-width: 500px; margin: 0 auto; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1 class="error">❌ Fehler</h1>
+                <p>{e.detail}</p>
+            </div>
+        </body>
+        </html>
+        """,
+            status_code=e.status_code,
+        )
+
+
 @router.post(
     "/verify-email",
     status_code=status.HTTP_200_OK,
@@ -299,16 +410,16 @@ async def verify_email(
                 details={"action": "email_verified"},
             )
 
-            return HTMLResponse("""
+            return HTMLResponse(f"""
             <!DOCTYPE html>
             <html>
             <head>
                 <title>E-Mail bestätigt</title>
                 <meta charset="UTF-8">
                 <style>
-                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
-                    .success { color: green; }
-                    .container { max-width: 500px; margin: 0 auto; }
+                    body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
+                    .success {{ color: green; }}
+                    .container {{ max-width: 500px; margin: 0 auto; }}
                 </style>
             </head>
             <body>
@@ -316,7 +427,7 @@ async def verify_email(
                     <h1 class="success">✅ E-Mail erfolgreich bestätigt!</h1>
                     <p>Ihre E-Mail-Adresse wurde erfolgreich verifiziert.</p>
                     <p>Sie können sich jetzt anmelden.</p>
-                    <p><a href="http://localhost:3000/auth/login">Zur Anmeldung</a></p>
+                    <p><a href="{FRONTEND_URL}/auth/login">Zur Anmeldung</a></p>
                 </div>
             </body>
             </html>
