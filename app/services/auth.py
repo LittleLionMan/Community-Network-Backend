@@ -244,7 +244,7 @@ class AuthService:
         self.db.add(db_token)
         await self.db.commit()
 
-        email_body = generate_password_reset_email(email, reset_token)
+        email_body = generate_password_reset_email(reset_token)
         send_email(email, "Passwort zurücksetzen", email_body, is_html=True)
 
         return True
@@ -327,7 +327,7 @@ class AuthService:
         self.db.add(db_token)
         await self.db.commit()
 
-        email_body = generate_verification_email(user.email, verification_token)
+        email_body = generate_verification_email(verification_token)
         send_email(user.email, "E-Mail-Adresse bestätigen", email_body, is_html=True)
 
     async def update_user_password(self, user_id: int, new_password: str) -> bool:

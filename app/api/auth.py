@@ -13,6 +13,7 @@ from app.services.auth import AuthService
 from app.core.logging import SecurityLogger, rate_limiter, get_client_ip
 from app.schemas.auth import (
     AvailabilityCheck,
+    ResendVerification,
     UserRegister,
     UserLogin,
     TokenResponse,
@@ -273,7 +274,7 @@ async def logout_all(
     )
 
 
-@router.get(
+@router.post(
     "/verify-email",
     status_code=status.HTTP_200_OK,
     responses={
@@ -282,9 +283,10 @@ async def logout_all(
 )
 @limiter.limit("10/minute")
 async def verify_email(
-    request: Request, token: str, db: Annotated[AsyncSession, Depends(get_db)]
+    request: Request,
+    verification_data: EmailVerification,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    verification_data = EmailVerification(token=token)
     auth_service = AuthService(db)
 
     try:
@@ -375,6 +377,42 @@ async def verify_email(
         """,
             status_code=e.status_code,
         )
+
+
+@router.post(
+    "/resend-verification",
+    status_code=status.HTTP_200_OK,
+    responses={
+        404: {"model": ErrorResponse, "description": "User not found"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
+)
+@limiter.limit("3/hour")
+async def resend_verification(
+    request: Request,
+    email_data: ResendVerification,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    auth_service = AuthService(db)
+
+    result = await db.execute(select(User).where(User.email == email_data.email))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        return {"message": "If the email exists, a verification link has been sent"}
+
+    if user.email_verified:
+        return {"message": "Email is already verified"}
+
+    await auth_service._send_verification_email(user)
+
+    SecurityLogger.log_suspicious_activity(
+        request,
+        "verification_email_resent",
+        details={"email": email_data.email},
+    )
+
+    return {"message": "Verification email sent"}
 
 
 @router.post(
