@@ -136,7 +136,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["plaetzchen.xyz", "www.plaetzchen.xyz", "localhost"],
+)
 
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])

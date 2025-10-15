@@ -249,7 +249,7 @@ async def get_my_posts(
     posts_list = list(posts)
 
     if check_achievement:
-        await _enrich_posts_with_achievements(posts_list, db, "bug_bounty")
+        await _enrich_posts_with_achievements(posts_list, db, check_achievement)
 
     return [ForumPostRead.model_validate(post) for post in posts_list]
 

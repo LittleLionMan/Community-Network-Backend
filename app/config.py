@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     ALLOWED_IMAGE_EXTENSIONS: str = ".jpg,.jpeg,.png,.gif,.webp"
 
     CORS_ORIGINS: str = Field(
-        default="http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000",
+        default="https://plaetzchen.com,https://www.plaetzchen.com,http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000",
         description="Comma-separated list of allowed origins",
     )
     CORS_ALLOW_CREDENTIALS: bool = True

@@ -81,3 +81,15 @@ class User(Base):
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
+
+    achievements_received: Mapped[list["UserAchievement"]] = relationship(
+        "UserAchievement",
+        foreign_keys="UserAchievement.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    achievements_awarded: Mapped[list["UserAchievement"]] = relationship(
+        "UserAchievement",
+        foreign_keys="UserAchievement.awarded_by_user_id",
+        back_populates="awarded_by",
+    )

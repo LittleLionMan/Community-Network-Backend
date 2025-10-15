@@ -38,3 +38,5 @@ slowapi>=0.1.9
 structlog>=25.4.0
 sentry-sdk[fastapi]>=2.35.0
 prometheus-client>=0.22.0
+
+sib-api-v3-sdk==7.6.0
