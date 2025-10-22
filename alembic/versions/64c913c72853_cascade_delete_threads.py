@@ -10,7 +10,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import sqlite
 
 # revision identifiers, used by Alembic.
 revision: str = "64c913c72853"
@@ -20,11 +19,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
+    """Upgrade schema - Add CASCADE delete for forum_posts."""
     connection = op.get_bind()
 
     if connection.dialect.name == "sqlite":
-        # SQLite: Muss Foreign Keys neu erstellen (kompliziert)
+        # SQLite: Muss Tabelle neu erstellen
         connection.execute(sa.text("PRAGMA foreign_keys = OFF"))
 
         # Backup erstellen
@@ -73,7 +72,7 @@ def upgrade() -> None:
         connection.execute(sa.text("PRAGMA foreign_keys = ON"))
 
     else:
-        # PostgreSQL: Einfaches Constraint-Update
+        # PostgreSQL: Constraint ändern
         op.drop_constraint(
             "forum_posts_thread_id_fkey", "forum_posts", type_="foreignkey"
         )
@@ -86,22 +85,9 @@ def upgrade() -> None:
             ondelete="CASCADE",
         )
 
-    # Andere Änderungen (für beide DBs)
-    with op.batch_alter_table("forum_thread_views", schema=None) as batch_op:
-        batch_op.drop_constraint("uq_user_thread", type_="unique")
-        batch_op.create_index(
-            "ix_forum_thread_views_thread_id", ["thread_id"], unique=False
-        )
-        batch_op.create_index(
-            "ix_forum_thread_views_user_id", ["user_id"], unique=False
-        )
-        batch_op.create_unique_constraint(
-            "uq_forum_thread_view_user_thread", ["user_id", "thread_id"]
-        )
-
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema - Remove CASCADE delete."""
     connection = op.get_bind()
 
     if connection.dialect.name == "sqlite":
@@ -150,11 +136,5 @@ def downgrade() -> None:
             "forum_posts",
             "forum_threads",
             ["thread_id"],
-            ["id"],
+            ["id"],  # Ohne ondelete
         )
-
-    with op.batch_alter_table("forum_thread_views", schema=None) as batch_op:
-        batch_op.drop_constraint("uq_forum_thread_view_user_thread", type_="unique")
-        batch_op.drop_index("ix_forum_thread_views_user_id")
-        batch_op.drop_index("ix_forum_thread_views_thread_id")
-        batch_op.create_unique_constraint("uq_user_thread", ["user_id", "thread_id"])
