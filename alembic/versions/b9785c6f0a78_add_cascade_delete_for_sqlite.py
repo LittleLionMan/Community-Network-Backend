@@ -1,7 +1,7 @@
 """cascade delete threads
 
-Revision ID: 64c913c72853
-Revises: 2b7436b6b289
+Revision ID: b9785c6f0a78
+Revises: 7e8e4839ff21
 Create Date: 2025-10-22 16:25:55.340401
 
 """
@@ -12,8 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = "64c913c72853"
-down_revision: Union[str, Sequence[str], None] = "2b7436b6b289"
+revision: str = "b9785c6f0a78"
+down_revision: Union[str, Sequence[str], None] = "7e8e4839ff21"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
