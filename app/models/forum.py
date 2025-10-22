@@ -53,10 +53,23 @@ class ForumThread(Base):
         "ForumCategory", back_populates="threads"
     )
     posts: Mapped[list["ForumPost"]] = relationship(
-        "ForumPost", back_populates="thread"
+        "ForumPost",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
-    polls: Mapped[list["Poll"]] = relationship("Poll", back_populates="thread")
-    views = relationship("ForumThreadView", back_populates="thread")
+    polls: Mapped[list["Poll"]] = relationship(
+        "Poll",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    views = relationship(
+        "ForumThreadView",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class ForumPost(Base):
@@ -72,7 +85,9 @@ class ForumPost(Base):
     )
 
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    thread_id: Mapped[int] = mapped_column(ForeignKey("forum_threads.id"))
+    thread_id: Mapped[int] = mapped_column(
+        ForeignKey("forum_threads.id", ondelete="CASCADE")
+    )
     quoted_post_id: Mapped[int | None] = mapped_column(
         ForeignKey("forum_posts.id", ondelete="SET NULL"), nullable=True
     )
