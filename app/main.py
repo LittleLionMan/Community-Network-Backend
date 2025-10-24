@@ -5,6 +5,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 import logging
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,7 @@ from app.services.scheduler_service import scheduler_service
 from app.core.logging import SecurityLogger
 from app.core.monitoring import rate_limit_monitor
 from app.core.middleware import setup_middleware
+from app.core.telegram import notify_telegram, TelegramNotifier
 from app.core.background_tasks import (
     startup_background_tasks,
     shutdown_background_tasks,
@@ -545,8 +547,37 @@ async def trigger_cleanup(
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(_request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+
+    try:
+        user_id = None
+        user_email = None
+
+        token = request.cookies.get("access_token")
+        if token:
+            from app.core.auth import verify_token
+
+            payload = verify_token(token)
+            if payload:
+                user_id = payload.get("sub")
+
+        error_traceback = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+
+        notify_telegram(
+            TelegramNotifier.notify_error(
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:200],
+                user_id=int(user_id) if user_id else None,
+                user_email=user_email,
+                endpoint=str(request.url.path),
+                traceback=error_traceback[:500],
+            )
+        )
+    except Exception as notify_error:
+        logger.error(f"Failed to send Telegram notification: {notify_error}")
 
     return JSONResponse(
         status_code=500,

@@ -2,6 +2,7 @@ import logging
 import json
 from datetime import datetime, timezone
 from fastapi import Request
+from app.core.telegram import TelegramNotifier, notify_telegram
 
 
 def get_client_ip(request: Request) -> str:
@@ -69,6 +70,7 @@ class SecurityLogger:
         user_id: int | None = None,
         success: bool = True,
         failure_reason: str | None = None,
+        display_name: str | None = None,
     ):
         log_data: dict[str, object] = {
             "event_type": "user_registration",
@@ -88,6 +90,10 @@ class SecurityLogger:
 
         if success:
             auth_logger.info(message)
+            if user_id and display_name:
+                notify_telegram(
+                    TelegramNotifier.notify_new_user(email, display_name, user_id)
+                )
         else:
             auth_logger.warning(message)
 
@@ -219,6 +225,14 @@ class SecurityLogger:
 
         message = f"Rate limit exceeded: {json.dumps(log_data)}"
         security_logger.warning(message)
+        notify_telegram(
+            TelegramNotifier.notify_rate_limit_exceeded(
+                limit_type=limit_type,
+                ip_address=get_client_ip(request),
+                user_id=user_id,
+                attempts=details.get("attempts", 0) if details else 0,
+            )
+        )
 
 
 class SimpleRateLimiter:

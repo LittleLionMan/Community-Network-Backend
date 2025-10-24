@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -17,66 +17,64 @@ security = HTTPBearer()
 
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
 
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
-    db: DatabaseSession
-) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
 
-    payload = verify_token(credentials.credentials, token_type="access")
-    if payload is None:
-        raise credentials_exception
+async def get_current_user(
+    access_token: str | None = Cookie(None), db: AsyncSession = Depends(get_db)
+) -> User:
+    if not access_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
+
+    payload = verify_token(access_token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
 
     user_id = payload.get("sub")
-    if user_id is None:
-        raise credentials_exception
-
-    if not isinstance(user_id, (str, int)):
-        raise credentials_exception
-
-    try:
-        user_id_int = int(user_id)
-    except (ValueError, TypeError):
-        raise credentials_exception
-
-    result = await db.execute(select(User).where(User.id == user_id_int))
-    user: User | None = result.scalar_one_or_none()
-
-    if user is None or not user.is_active:
-        raise credentials_exception
-
-    if not user.email_verified:
+    if not user_id or not isinstance(user_id, (str, int)):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email not verified. Please check your email and verify your account."
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload"
+        )
+
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
         )
 
     return user
 
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
-async def get_current_active_user(
-    current_user: CurrentUser
-) -> User:
-    return current_user
 
-async def get_current_admin_user(
-    current_user: CurrentUser
+async def get_current_active_user(
+    current_user: User = Depends(get_current_user),
 ) -> User:
-    if not current_user.is_admin:
+    if not current_user.is_active:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user"
         )
     return current_user
 
+
+async def get_current_admin_user(current_user: CurrentUser) -> User:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+        )
+    return current_user
+
+
 async def get_optional_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))],
-    db: DatabaseSession
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))
+    ],
+    db: DatabaseSession,
 ) -> User | None:
     if not credentials:
         return None
@@ -104,44 +102,47 @@ async def get_optional_current_user(
             return None
 
         return user
-    except:
+    except ():
         return None
+
 
 async def get_event_service(db: DatabaseSession) -> EventService:
     return EventService(db)
 
+
 async def get_matching_service(db: DatabaseSession) -> ServiceMatchingService:
     return ServiceMatchingService(db)
+
 
 async def get_moderation_service(db: DatabaseSession) -> ModerationService:
     return ModerationService(db)
 
+
 async def get_voting_service(db: DatabaseSession) -> VotingService:
     return VotingService(db)
+
 
 async def get_message_service(db: DatabaseSession) -> MessageService:
     return MessageService(db)
 
-async def verify_message_permissions(
-    current_user: CurrentUser
-) -> User:
+
+async def verify_message_permissions(current_user: CurrentUser) -> User:
     if not current_user.messages_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Direct messages are disabled for your account"
+            detail="Direct messages are disabled for your account",
         )
     return current_user
 
+
 async def verify_conversation_participant(
-    conversation_id: int,
-    current_user: CurrentUser,
-    db: DatabaseSession
+    conversation_id: int, current_user: CurrentUser, db: DatabaseSession
 ) -> User:
     result = await db.execute(
         select(ConversationParticipant).where(
             and_(
                 ConversationParticipant.conversation_id == conversation_id,
-                ConversationParticipant.user_id == current_user.id
+                ConversationParticipant.user_id == current_user.id,
             )
         )
     )
@@ -149,6 +150,6 @@ async def verify_conversation_participant(
     if not participant:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a participant in this conversation"
+            detail="You are not a participant in this conversation",
         )
     return current_user

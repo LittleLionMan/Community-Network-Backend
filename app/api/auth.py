@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from slowapi import Limiter
@@ -71,7 +71,11 @@ async def register(
         user = await auth_service.register_user(user_data)
 
         SecurityLogger.log_registration(
-            request, email=user.email, user_id=user.id, success=True
+            request,
+            email=user.email,
+            user_id=user.id,
+            success=True,
+            display_name=user.display_name,
         )
 
         return UserPrivate.model_validate(user)
@@ -110,6 +114,7 @@ async def register(
 @limiter.limit("10/minute")
 async def login(
     request: Request,
+    response: Response,
     login_data: UserLogin,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -191,6 +196,27 @@ async def login(
     )
 
     tokens = await auth_service.create_tokens(user)
+
+    response.set_cookie(
+        key="access_token",
+        value=tokens.access_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=1800,
+        path="/",
+    )
+
+    response.set_cookie(
+        key="refresh_token",
+        value=tokens.refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=2592000,
+        path="/api/auth",
+    )
+
     return tokens
 
 
@@ -202,13 +228,39 @@ async def login(
 @limiter.limit("20/minute")
 async def refresh_token(
     request: Request,
-    token_data: TokenRefresh,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
+    refresh_token: str | None = Cookie(None),
 ):
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token"
+        )
+
     auth_service = AuthService(db)
 
     try:
-        tokens = await auth_service.refresh_access_token(token_data.refresh_token)
+        tokens = await auth_service.refresh_access_token(refresh_token)
+
+        response.set_cookie(
+            key="access_token",
+            value=tokens.access_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=1800,
+            path="/",
+        )
+
+        response.set_cookie(
+            key="refresh_token",
+            value=tokens.refresh_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=2592000,
+            path="/api/auth",
+        )
 
         SecurityLogger.log_suspicious_activity(
             request, "token_refresh_success", details={"action": "token_refresh"}
@@ -231,14 +283,19 @@ async def refresh_token(
 )
 async def logout(
     request: Request,
+    response: Response,
     refresh_token_data: TokenRefresh,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    refresh_token: str | None = Cookie(None),
 ):
     auth_service = AuthService(db)
-    _ = await auth_service.revoke_refresh_token(
-        current_user.id, refresh_token_data.refresh_token
-    )
+
+    if refresh_token:
+        await auth_service.revoke_refresh_token(current_user.id, refresh_token)
+
+    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path="/api/auth")
 
     SecurityLogger.log_login_attempt(
         request,
