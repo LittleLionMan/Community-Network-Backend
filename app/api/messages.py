@@ -309,8 +309,13 @@ async def websocket_conversation(
     websocket: WebSocket,
     conversation_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
-    token: Annotated[str, Query()],
 ):
+    token = websocket.cookies.get("access_token")
+
+    if not token:
+        await websocket.close(code=4001, reason="No access token in cookies")
+        return
+
     user_id = await websocket_auth_manager.authenticate_connection(
         websocket, token, "conversation", conversation_id
     )
@@ -359,10 +364,15 @@ async def websocket_conversation(
 @router.websocket("/ws/user")
 async def websocket_user_notifications(
     websocket: WebSocket,
-    token: Annotated[str, Query()],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     from ..core.auth import verify_token
+
+    token = websocket.cookies.get("access_token")
+
+    if not token:
+        await websocket.close(code=4001, reason="No access token in cookies")
+        return
 
     payload = verify_token(token, token_type="access")
     if not payload:
