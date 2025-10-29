@@ -35,6 +35,15 @@ class ForumThreadSummary(BaseModel):
     creator: UserSummary
 
 
+class ForumPostSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    content: str
+    created_at: datetime
+    author: UserSummary
+
+
 class ForumCategoryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -48,6 +57,9 @@ class ForumCategoryRead(BaseModel):
     created_at: datetime
     thread_count: int = 0
     latest_thread: ForumThreadSummary | None = None
+    latest_activity_thread: ForumThreadSummary | None = None
+    latest_activity_post: ForumPostSummary | None = None
+    latest_activity_at: datetime | None = None
 
 
 class ForumThreadCreate(BaseModel):
@@ -74,6 +86,7 @@ class ForumThreadRead(BaseModel):
     category: ForumCategoryRead
     post_count: int = 0
     latest_post: datetime | None = None
+    latest_post_author: UserSummary | None = None
 
 
 class QuotedPostSummary(BaseModel):

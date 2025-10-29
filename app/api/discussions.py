@@ -54,6 +54,28 @@ async def _enrich_posts_with_achievements(
         post.has_achievement = post.id in achievement_post_ids
 
 
+async def _enrich_thread_with_stats(thread, db: AsyncSession):
+    post_count_result = await db.execute(
+        select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
+    )
+    post_count = post_count_result.scalar() or 0
+
+    latest_post_result = await db.execute(
+        select(ForumPost)
+        .where(ForumPost.thread_id == thread.id)
+        .options(selectinload(ForumPost.author))
+        .order_by(ForumPost.created_at.desc())
+        .limit(1)
+    )
+    latest_post = latest_post_result.scalar_one_or_none()
+
+    return {
+        "post_count": post_count,
+        "latest_post": latest_post.created_at if latest_post else None,
+        "latest_post_author": latest_post.author if latest_post else None,
+    }
+
+
 def extract_mentions(html_content: str) -> list[int]:
     pattern = r'data-id="(\d+)"'
     matches = re.findall(pattern, html_content)
@@ -95,24 +117,17 @@ async def get_threads(
 
     result = await db.execute(query)
     threads = result.scalars().all()
+
     enriched_threads: list[ForumThreadRead] = []
     for thread in threads:
-        post_count_result = await db.execute(
-            select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
-        )
-        post_count = post_count_result.scalar() or 0
-
-        latest_post_result = await db.execute(
-            select(ForumPost.created_at)
-            .where(ForumPost.thread_id == thread.id)
-            .order_by(ForumPost.created_at.desc())
-            .limit(1)
-        )
-        latest_post = latest_post_result.scalar_one_or_none()
+        stats = await _enrich_thread_with_stats(thread, db)
 
         thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-        thread_dict["post_count"] = post_count
-        thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+        thread_dict["post_count"] = stats["post_count"]
+        thread_dict["latest_post"] = (
+            stats["latest_post"].isoformat() if stats["latest_post"] else None
+        )
+        thread_dict["latest_post_author"] = stats["latest_post_author"]
 
         enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
 
@@ -162,22 +177,14 @@ async def get_threads_in_category(
 
     enriched_threads: list[ForumThreadRead] = []
     for thread in threads:
-        post_count_result = await db.execute(
-            select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
-        )
-        post_count = post_count_result.scalar() or 0
-
-        latest_post_result = await db.execute(
-            select(ForumPost.created_at)
-            .where(ForumPost.thread_id == thread.id)
-            .order_by(ForumPost.created_at.desc())
-            .limit(1)
-        )
-        latest_post = latest_post_result.scalar_one_or_none()
+        stats = await _enrich_thread_with_stats(thread, db)
 
         thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-        thread_dict["post_count"] = post_count
-        thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+        thread_dict["post_count"] = stats["post_count"]
+        thread_dict["latest_post"] = (
+            stats["latest_post"].isoformat() if stats["latest_post"] else None
+        )
+        thread_dict["latest_post_author"] = stats["latest_post_author"]
 
         enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
 
@@ -205,22 +212,14 @@ async def get_my_threads(
 
     enriched_threads: list[ForumThreadRead] = []
     for thread in threads:
-        post_count_result = await db.execute(
-            select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
-        )
-        post_count = post_count_result.scalar() or 0
-
-        latest_post_result = await db.execute(
-            select(ForumPost.created_at)
-            .where(ForumPost.thread_id == thread.id)
-            .order_by(ForumPost.created_at.desc())
-            .limit(1)
-        )
-        latest_post = latest_post_result.scalar_one_or_none()
+        stats = await _enrich_thread_with_stats(thread, db)
 
         thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-        thread_dict["post_count"] = post_count
-        thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+        thread_dict["post_count"] = stats["post_count"]
+        thread_dict["latest_post"] = (
+            stats["latest_post"].isoformat() if stats["latest_post"] else None
+        )
+        thread_dict["latest_post_author"] = stats["latest_post_author"]
 
         enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
 
@@ -335,22 +334,14 @@ async def get_thread(thread_id: int, db: Annotated[AsyncSession, Depends(get_db)
             status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
         )
 
-    post_count_result = await db.execute(
-        select(func.count(ForumPost.id)).where(ForumPost.thread_id == thread.id)
-    )
-    post_count = post_count_result.scalar() or 0
-
-    latest_post_result = await db.execute(
-        select(ForumPost.created_at)
-        .where(ForumPost.thread_id == thread.id)
-        .order_by(ForumPost.created_at.desc())
-        .limit(1)
-    )
-    latest_post = latest_post_result.scalar_one_or_none()
+    stats = await _enrich_thread_with_stats(thread, db)
 
     thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-    thread_dict["post_count"] = post_count
-    thread_dict["latest_post"] = latest_post.isoformat() if latest_post else None
+    thread_dict["post_count"] = stats["post_count"]
+    thread_dict["latest_post"] = (
+        stats["latest_post"].isoformat() if stats["latest_post"] else None
+    )
+    thread_dict["latest_post_author"] = stats["latest_post_author"]
 
     return ForumThreadRead.model_validate(thread_dict)
 
@@ -816,7 +807,7 @@ async def mark_thread_as_read(
         stmt = stmt.on_conflict_do_update(
             index_elements=["user_id", "thread_id"], set_={"last_viewed_at": func.now()}
         )
-    except:
+    except ():
         stmt = mysql_insert(ForumThreadView).values(
             user_id=current_user.id, thread_id=thread_id, last_viewed_at=func.now()
         )
