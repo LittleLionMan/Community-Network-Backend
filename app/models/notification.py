@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from typing import TYPE_CHECKING
 from .base import Base
+from .types import UTCDateTime
 
 if TYPE_CHECKING:
     from .user import User
@@ -21,8 +22,6 @@ class Notification(Base):
 
     data: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship("User", back_populates="notifications")

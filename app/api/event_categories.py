@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 from typing import Annotated, cast
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -80,7 +80,7 @@ async def get_admin_event_categories(
             event_count=event_count or 0,
             created_at=category.created_at.isoformat()
             if hasattr(category, "created_at")
-            else datetime.now().isoformat(),
+            else datetime.now(timezone.utc).isoformat(),
             can_delete=(event_count or 0) == 0,
         )
         categories_with_stats.append(stats)
@@ -291,7 +291,7 @@ async def create_default_event_categories(
                 event_count=event_count,
                 created_at=category.created_at.isoformat()
                 if hasattr(category, "created_at")
-                else datetime.now().isoformat(),
+                else datetime.now(timezone.utc).isoformat(),
                 can_delete=True,
             )
             created_categories.append(stats)

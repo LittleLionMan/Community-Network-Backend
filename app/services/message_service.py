@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, desc, delete
 from sqlalchemy.orm import selectinload
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from ..models.message import (
     Conversation,
@@ -424,7 +424,7 @@ class MessageService:
         ]
 
         self.db.add_all(read_receipts)
-        participant.last_read_at = datetime.now()
+        participant.last_read_at = datetime.now(timezone.utc)
 
         await self.db.commit()
 
@@ -500,13 +500,13 @@ class MessageService:
             raise ValueError("Cannot edit deleted message")
 
         edit_deadline = message.created_at + timedelta(minutes=15)
-        if datetime.now() > edit_deadline:
+        if datetime.now(timezone.utc) > edit_deadline:
             raise ValueError("Edit time limit exceeded")
 
         moderation_result = self.moderation_service.check_content(data.content)
 
         message.content = data.content
-        message.edited_at = datetime.now()
+        message.edited_at = datetime.now(timezone.utc)
         message.is_edited = True
         message.is_flagged = moderation_result.get("is_flagged", False)
         message.moderation_status = (
@@ -778,7 +778,7 @@ class MessageService:
             print(f"Failed to send WebSocket notification: {e}")
 
     async def cleanup_old_messages(self, days_old: int = 365):
-        cutoff_date = datetime.now() - timedelta(days=days_old)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
         result = await self.db.execute(
             select(func.count(Message.id)).where(
@@ -803,7 +803,8 @@ class MessageService:
         empty_conversations_query = select(Conversation.id).where(
             and_(
                 Conversation.id.not_in(conversations_with_messages),
-                Conversation.created_at < datetime.now() - timedelta(hours=1),
+                Conversation.created_at
+                < datetime.now(timezone.utc) - timedelta(hours=1),
             )
         )
 
@@ -875,7 +876,7 @@ class MessageService:
             message.moderation_status = "pending"
 
         message.moderation_reason = reason
-        message.moderated_at = datetime.now()
+        message.moderated_at = datetime.now(timezone.utc)
         message.moderated_by = admin_id
 
         await self.db.commit()

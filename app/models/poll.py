@@ -4,6 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from .enums import PollType
+from .types import UTCDateTime
 
 
 class Poll(Base):
@@ -13,10 +14,8 @@ class Poll(Base):
     question: Mapped[str] = mapped_column(String(500), nullable=False)
     poll_type: Mapped[PollType] = mapped_column(SQLEnum(PollType), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    ends_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     thread_id: Mapped[int | None] = mapped_column(ForeignKey("forum_threads.id"))
@@ -61,9 +60,7 @@ class Vote(Base):
     __tablename__ = "votes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     poll_id: Mapped[int] = mapped_column(ForeignKey("polls.id", ondelete="CASCADE"))

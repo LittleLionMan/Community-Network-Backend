@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated
 
 from app.core.dependencies import get_current_admin_user
@@ -30,7 +30,7 @@ async def get_user_rate_limit_stats(
         "user_id": user_id,
         "content_usage": stats["usage"],
         "active_lockouts": stats["lockouts"],
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 

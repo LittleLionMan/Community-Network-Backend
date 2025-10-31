@@ -10,7 +10,7 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.database import get_db
 from app.models.event import Event, EventCategory, EventParticipation
@@ -68,7 +68,7 @@ async def get_events(
     )
 
     if upcoming_only:
-        query = query.where(Event.start_datetime >= datetime.now())
+        query = query.where(Event.start_datetime >= datetime.now(timezone.utc))
 
     if category_id and not political_only and not exclude_political:
         query = query.where(Event.category_id == category_id)

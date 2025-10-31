@@ -2,7 +2,8 @@ from typing import TypedDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from ..models.poll import Poll, PollOption, Vote
-from datetime import datetime
+from datetime import datetime, timezone
+
 
 class PollOptionResult(TypedDict):
     option_id: int
@@ -10,9 +11,11 @@ class PollOptionResult(TypedDict):
     votes: int
     percentage: float
 
+
 class WinnerInfo(TypedDict):
     option_id: int
     text: str
+
 
 class VotingService:
     db: AsyncSession
@@ -21,10 +24,7 @@ class VotingService:
         self.db = db
 
     async def analyze_poll_results(self, poll_id: int) -> dict[str, object]:
-
-        result = await self.db.execute(
-            select(Poll).where(Poll.id == poll_id)
-        )
+        result = await self.db.execute(select(Poll).where(Poll.id == poll_id))
         poll = result.scalar_one_or_none()
 
         if not poll:
@@ -32,9 +32,7 @@ class VotingService:
 
         vote_data = await self.db.execute(
             select(
-                PollOption.id,
-                PollOption.text,
-                func.count(Vote.id).label('vote_count')
+                PollOption.id, PollOption.text, func.count(Vote.id).label("vote_count")
             )
             .select_from(PollOption)
             .outerjoin(Vote, Vote.option_id == PollOption.id)
@@ -52,22 +50,24 @@ class VotingService:
             option_id: int = row[0] or 0
             text: str = row[1] or ""
             vote_count: int = row[2] or 0
-            options_data.append({
-                'option_id': option_id,
-                'text': text,
-                'votes': vote_count,
-                'percentage': 0.0
-            })
+            options_data.append(
+                {
+                    "option_id": option_id,
+                    "text": text,
+                    "votes": vote_count,
+                    "percentage": 0.0,
+                }
+            )
             total_votes += vote_count
 
             if vote_count > max_votes:
                 max_votes = vote_count
-                winners = [{'option_id': option_id, 'text': text}]
+                winners = [{"option_id": option_id, "text": text}]
             elif vote_count == max_votes and max_votes > 0:
-                winners.append({'option_id': option_id, 'text': text})
+                winners.append({"option_id": option_id, "text": text})
 
         for option in options_data:
-            option['percentage'] = (option['votes'] / max(1, total_votes)) * 100
+            option["percentage"] = (option["votes"] / max(1, total_votes)) * 100
 
         result_type = "no_votes"
         if total_votes > 0:
@@ -79,14 +79,16 @@ class VotingService:
                 result_type = "unclear"
 
         return {
-            'poll_id': poll_id,
-            'question': poll.question,
-            'total_votes': total_votes,
-            'options': options_data,
-            'winners': winners,
-            'result_type': result_type,
-            'is_concluded': poll.ends_at and poll.ends_at < datetime.now() if poll.ends_at else False,
-            'participation_rate': self._calculate_participation_rate(total_votes)
+            "poll_id": poll_id,
+            "question": poll.question,
+            "total_votes": total_votes,
+            "options": options_data,
+            "winners": winners,
+            "result_type": result_type,
+            "is_concluded": poll.ends_at and poll.ends_at < datetime.now(timezone.utc)
+            if poll.ends_at
+            else False,
+            "participation_rate": self._calculate_participation_rate(total_votes),
         }
 
     def _calculate_participation_rate(self, votes: int) -> str:
@@ -100,7 +102,6 @@ class VotingService:
             return "high"
 
     async def get_user_voting_stats(self, user_id: int) -> dict[str, object]:
-
         polls_created_result = await self.db.execute(
             select(func.count(Poll.id)).where(Poll.creator_id == user_id)
         )
@@ -112,10 +113,10 @@ class VotingService:
         votes_cast = votes_cast_result.scalar() or 0
 
         return {
-            'user_id': user_id,
-            'polls_created': polls_created,
-            'votes_cast': votes_cast,
-            'engagement_level': self._assess_engagement(polls_created, votes_cast)
+            "user_id": user_id,
+            "polls_created": polls_created,
+            "votes_cast": votes_cast,
+            "engagement_level": self._assess_engagement(polls_created, votes_cast),
         }
 
     def _assess_engagement(self, polls_created: int, votes_cast: int) -> str:
@@ -130,8 +131,9 @@ class VotingService:
         else:
             return "high"
 
-    async def suggest_poll_duration(self, poll_type: str, expected_participants: int | None = None) -> int:
-
+    async def suggest_poll_duration(
+        self, poll_type: str, expected_participants: int | None = None
+    ) -> int:
         if poll_type == "admin":
             return 168
         elif poll_type == "thread":

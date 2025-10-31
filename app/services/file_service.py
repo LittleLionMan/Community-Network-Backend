@@ -4,7 +4,7 @@ import hashlib
 import magic as python_magic
 from pathlib import Path
 from fastapi import HTTPException, UploadFile
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 import uuid
 
@@ -189,7 +189,7 @@ class FileUploadService:
 
         file_hash = hashlib.sha256(content).hexdigest()[:16]
         file_extension = self._get_safe_extension(detected_mime)
-        timestamp = int(datetime.now().timestamp())
+        timestamp = int(datetime.now(timezone.utc).timestamp())
         filename = f"service_{user_id}_{timestamp}_{uuid.uuid4().hex[:8]}_{file_hash}{file_extension}"
 
         file_path = self.service_images_dir / filename

@@ -1,8 +1,9 @@
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, ForeignKey
+from sqlalchemy import String, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
+from .types import UTCDateTime
 
 
 class UserAchievement(Base):
@@ -19,9 +20,7 @@ class UserAchievement(Base):
     awarded_by_user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(
         "User", foreign_keys=[user_id], back_populates="achievements_received"

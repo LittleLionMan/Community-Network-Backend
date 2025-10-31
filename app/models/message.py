@@ -3,6 +3,7 @@ from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Ind
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
+from .types import UTCDateTime
 
 
 class Conversation(Base):
@@ -10,14 +11,12 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        UTCDateTime, server_default=func.now(), onupdate=func.now()
     )
 
-    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_message_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     last_message_preview: Mapped[str | None] = mapped_column(String(100))
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -46,10 +45,8 @@ class ConversationParticipant(Base):
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
-    joined_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    joined_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
+    last_read_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     is_muted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -78,10 +75,8 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     message_type: Mapped[str] = mapped_column(String(20), default="text")
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
+    edited_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_edited: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -89,7 +84,7 @@ class Message(Base):
     is_flagged: Mapped[bool] = mapped_column(Boolean, default=False)
     moderation_status: Mapped[str | None] = mapped_column(String(20))
     moderation_reason: Mapped[str | None] = mapped_column(Text)
-    moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    moderated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     moderated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
     reply_to_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"))
@@ -118,9 +113,7 @@ class MessageReadReceipt(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    read_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    read_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     message: Mapped["Message"] = relationship("Message", back_populates="read_receipts")
     user: Mapped["User"] = relationship("User")

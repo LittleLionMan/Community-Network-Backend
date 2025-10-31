@@ -4,6 +4,7 @@ from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from datetime import datetime, timezone
 from typing import Annotated
 import re
 
@@ -711,9 +712,8 @@ async def update_post(
         )
 
     post.content = post_data.content
-    from datetime import datetime
 
-    post.updated_at = datetime.now()
+    post.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
     await db.refresh(post, ["author"])

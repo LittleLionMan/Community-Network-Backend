@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from typing import Annotated
+from datetime import datetime, timedelta, timezone
 
 from app.database import get_db
 from app.models.poll import Poll, PollOption, Vote
@@ -238,9 +239,9 @@ async def create_poll(
             poll_type=poll_data.poll_type.value, expected_participants=None
         )
 
-        from datetime import datetime, timedelta
-
-        poll_data.ends_at = datetime.now() + timedelta(hours=suggested_hours)
+        poll_data.ends_at = datetime.now(timezone.utc) + timedelta(
+            hours=suggested_hours
+        )
 
     poll_dict = poll_data.model_dump(exclude={"options"})
     poll_dict["creator_id"] = current_user.id
@@ -419,9 +420,7 @@ async def vote_on_poll(
         )
 
     if poll.ends_at:
-        from datetime import datetime
-
-        if poll.ends_at <= datetime.now():
+        if poll.ends_at <= datetime.now(timezone.utc):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Poll has ended"
             )

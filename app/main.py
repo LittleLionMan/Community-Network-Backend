@@ -170,7 +170,7 @@ async def health_check():
     health_status = {
         "status": "healthy",
         "version": settings.VERSION,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "features": {
             "authentication": True,
             "refresh_token_rotation": True,
@@ -289,7 +289,7 @@ async def admin_dashboard(
         stats["active_refresh_tokens"] = active_tokens.scalar() or 0
         stats["total_refresh_tokens"] = total_tokens.scalar() or 0
 
-        week_ago = datetime.now() - timedelta(days=7)
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
         recent_users = await db.execute(
             select(func.count(User.id)).where(User.created_at > week_ago)
@@ -442,7 +442,7 @@ async def process_completed_events(
             request, admin_user_id=current_admin.id, action="process_completed_events"
         )
 
-        cutoff_time = datetime.now() - timedelta(hours=1)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
 
         result = await db.execute(
             text("""
@@ -597,7 +597,7 @@ async def public_platform_stats(db: Annotated[AsyncSession, Depends(get_db)]):
 
         active_events = await db.execute(
             select(func.count(Event.id)).where(
-                Event.is_active, Event.start_datetime > datetime.now()
+                Event.is_active, Event.start_datetime > datetime.now(timezone.utc)
             )
         )
 

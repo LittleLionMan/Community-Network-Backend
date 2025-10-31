@@ -12,6 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
 from .enums import ParticipationStatus
+from .types import UTCDateTime
 
 
 class EventCategory(Base):
@@ -20,9 +21,7 @@ class EventCategory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     events: Mapped[list["Event"]] = relationship("Event", back_populates="category")
 
@@ -33,16 +32,12 @@ class Event(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    start_datetime: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    end_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    start_datetime: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    end_datetime: Mapped[datetime | None] = mapped_column(UTCDateTime)
     location: Mapped[str | None] = mapped_column(String(300))
     max_participants: Mapped[int | None] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     category_id: Mapped[int] = mapped_column(ForeignKey("event_categories.id"))
@@ -65,10 +60,10 @@ class EventParticipation(Base):
         SQLEnum(ParticipationStatus), nullable=False
     )
     registered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        UTCDateTime, server_default=func.now()
     )
     status_updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        UTCDateTime, server_default=func.now(), onupdate=func.now()
     )
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))

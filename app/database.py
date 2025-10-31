@@ -8,18 +8,20 @@ engine = create_async_engine(
     echo=settings.DEBUG,
     pool_pre_ping=True,
     pool_size=10,
-    max_overflow=20
+    max_overflow=20,
 )
 
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
 
-redis_client = redis.from_url(settings.REDIS_URL) # type: ignore[misc]
+redis_client = redis.from_url(settings.REDIS_URL)  # type: ignore[misc]
+
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
+
 
 async def get_redis():
     return redis_client

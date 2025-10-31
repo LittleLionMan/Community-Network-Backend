@@ -3,6 +3,7 @@ from sqlalchemy import Text, Integer, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from .base import Base
+from .types import UTCDateTime
 
 
 class Comment(Base):
@@ -10,9 +11,7 @@ class Comment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
 
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("comments.id"))
