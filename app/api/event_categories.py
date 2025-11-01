@@ -245,6 +245,10 @@ async def create_default_event_categories(
             "name": "Kultur",
             "description": "Kulturelle Veranstaltungen, Kunst und Musik",
         },
+        {
+            "name": "Politik",
+            "description": "Politische Diskussionen und Bürgerveranstaltungen",
+        },
         {"name": "Bildung", "description": "Workshops, Kurse und Lernveranstaltungen"},
         {
             "name": "Community",

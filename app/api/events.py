@@ -163,6 +163,7 @@ async def get_civic_events(
         limit=limit,
         upcoming_only=upcoming_only,
         political_only=True,
+        exclude_political=False,
         db=db,
     )
 
@@ -187,6 +188,7 @@ async def get_regular_events(
         limit=limit,
         category_id=category_id,
         upcoming_only=upcoming_only,
+        political_only=False,
         exclude_political=True,
         db=db,
     )
@@ -206,7 +208,7 @@ async def get_event(
 ):
     query = (
         select(Event)
-        .where(Event.id == event_id, Event.is_active == True)
+        .where(Event.id == event_id, Event.is_active)
         .options(
             selectinload(Event.creator),
             selectinload(Event.category),
@@ -256,7 +258,6 @@ async def create_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Handle civic events
     if is_civic:
         civic_service = CivicService(db)
         politics_category_id = await civic_service.get_politics_category_id()
