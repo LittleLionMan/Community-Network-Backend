@@ -1,7 +1,10 @@
-from datetime import datetime
-from sqlalchemy import String, Text, Boolean, Integer, DateTime
+from datetime import datetime, timezone
+
+from dateutil.relativedelta import relativedelta
+from sqlalchemy import Boolean, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
+
 from .base import Base
 from .types import UTCDateTime
 
@@ -19,6 +22,16 @@ class User(Base):
     bio: Mapped[str | None] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(String(200))
     profile_image_url: Mapped[str | None] = mapped_column(String(500))
+
+    location_lat: Mapped[float | None] = mapped_column(Float)
+    location_lon: Mapped[float | None] = mapped_column(Float)
+    location_geocoded_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    location_district: Mapped[str | None] = mapped_column(String(200))
+
+    book_credits_remaining: Mapped[int] = mapped_column(
+        Integer, default=1, nullable=False
+    )
+    book_credits_last_reset: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -76,11 +89,9 @@ class User(Base):
     read_receipts: Mapped[list["MessageReadReceipt"]] = relationship(
         "MessageReadReceipt", back_populates="user"
     )
-
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
-
     achievements_received: Mapped[list["UserAchievement"]] = relationship(
         "UserAchievement",
         foreign_keys="UserAchievement.user_id",
@@ -92,3 +103,37 @@ class User(Base):
         foreign_keys="UserAchievement.awarded_by_user_id",
         back_populates="awarded_by",
     )
+
+    book_offers_owned: Mapped[list["BookOffer"]] = relationship(
+        "BookOffer", foreign_keys="BookOffer.owner_id", back_populates="owner"
+    )
+    book_offers_reserved: Mapped[list["BookOffer"]] = relationship(
+        "BookOffer",
+        foreign_keys="BookOffer.reserved_by_user_id",
+        back_populates="reserved_by",
+    )
+
+    __table_args__ = (
+        Index("idx_user_location_coords", "location_lat", "location_lon"),
+    )
+
+    def reset_credits_if_needed(self) -> bool:
+        now = datetime.now(timezone.utc)
+
+        if self.book_credits_remaining > 0:
+            return False
+
+        if not self.book_credits_last_reset:
+            self.book_credits_remaining = 1
+            self.book_credits_last_reset = now
+            return True
+
+        last_reset_month = self.book_credits_last_reset.replace(tzinfo=timezone.utc)
+        next_reset_date = last_reset_month + relativedelta(months=1)
+
+        if now >= next_reset_date:
+            self.book_credits_remaining = 1
+            self.book_credits_last_reset = now
+            return True
+
+        return False

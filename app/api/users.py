@@ -1,45 +1,47 @@
+from pathlib import Path
+from typing import Annotated
+
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
-    status,
     File,
-    UploadFile,
+    HTTPException,
     Query,
     Request,
+    UploadFile,
+    status,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pathlib import Path
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_password_hash
+from app.core.dependencies import (
+    get_current_active_user,
+    get_current_admin_user,
+    get_optional_current_user,
+)
+from app.core.logging import SecurityLogger
+from app.core.rate_limit_decorator import read_rate_limit
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import (
-    UserCreate,
-    UserUpdate,
-    UserPublic,
-    UserPrivate,
     UserAdmin,
+    UserCreate,
+    UserPrivate,
+    UserPublic,
     UserSummary,
+    UserUpdate,
 )
-from app.services.privacy import PrivacyService
 from app.services.file_service import FileUploadService
-from app.core.dependencies import (
-    get_current_active_user,
-    get_optional_current_user,
-    get_current_admin_user,
-)
-from app.core.rate_limit_decorator import read_rate_limit
-from app.core.auth import get_password_hash
-from app.core.logging import SecurityLogger
-from typing import Annotated
+from app.services.location_service import LocationService
+from app.services.privacy import PrivacyService
 
 router = APIRouter()
 
 
 UPLOAD_DIR = Path("uploads/profile_images")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+MAX_FILE_SIZE = 5 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
@@ -114,6 +116,21 @@ async def update_current_user(
             )
 
     update_data: dict[str, object] = user_update.model_dump(exclude_unset=True)
+
+    if "location" in update_data and update_data["location"]:
+        location_string = str(update_data["location"])
+        geocode_success = await LocationService.geocode_user_location(
+            db, current_user, location_string
+        )
+
+        if not geocode_success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Der angegebene Standort konnte nicht gefunden werden. Bitte überprüfen Sie die Adresse.",
+            )
+
+        update_data.pop("location")
+
     for field, value in update_data.items():
         if hasattr(current_user, field):
             setattr(current_user, field, value)
