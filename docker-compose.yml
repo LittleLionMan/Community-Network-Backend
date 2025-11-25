@@ -27,8 +27,17 @@ services:
       - redis
     volumes:
       - ./uploads:/app/uploads
+      - ./scripts:/app/scripts
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: >
+      sh -c "
+        echo '🚀 Starting backend setup...' &&
+        alembic upgrade head &&
+        echo '✅ Migrations applied' &&
+        python scripts/create_book_exchange_service.py &&
+        echo '✅ Bücherecke service ready' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
 
 volumes:
   postgres_data:

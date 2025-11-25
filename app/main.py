@@ -1,64 +1,66 @@
-from fastapi import FastAPI, Request, BackgroundTasks, Depends
-from typing import Annotated, cast
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
 import logging
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select, text
-from dotenv import load_dotenv
 from pathlib import Path
+from typing import Annotated, cast
+
 import sentry_sdk
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.starlette import StarletteIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 env_path = Path(__file__).resolve().parent.parent / ".env"
 _ = load_dotenv(dotenv_path=env_path)
 
-from app.config import settings
-from app.database import get_db
-from app.core.dependencies import get_current_admin_user
-from app.services.scheduler_service import scheduler_service
-from app.core.logging import SecurityLogger
-from app.core.monitoring import rate_limit_monitor
-from app.core.middleware import setup_middleware
-from app.core.telegram import notify_telegram, TelegramNotifier
-from app.core.background_tasks import (
-    startup_background_tasks,
-    shutdown_background_tasks,
-    run_maintenance,
-)
-from app.services.event_service import EventService
 from app.api import (
+    achievements,
+    admin_rate_limits,
+    admin_security,
     auth,
-    users,
+    books,
+    comments,
+    discussions,
     event_categories,
     events,
-    services,
-    discussions,
-    comments,
-    polls,
     forum_categories,
+    location,
     messages,
-    admin_security,
-    admin_rate_limits,
     notifications,
-    achievements,
+    polls,
+    services,
+    users,
 )
-from app.models.user import User
-from app.models.event import Event
-from app.models.service import Service
-from app.models.poll import Poll
-from app.models.comment import Comment
-from app.models.forum import ForumPost
-from app.models.poll import Poll, Vote
-from app.models.message import Message, Conversation
+from app.config import settings
+from app.core.background_tasks import (
+    run_maintenance,
+    shutdown_background_tasks,
+    startup_background_tasks,
+)
+from app.core.dependencies import get_current_admin_user
+from app.core.logging import SecurityLogger
+from app.core.middleware import setup_middleware
+from app.core.monitoring import rate_limit_monitor
+from app.core.telegram import TelegramNotifier, notify_telegram
+from app.database import get_db
 from app.models.auth import RefreshToken
+from app.models.comment import Comment
+from app.models.event import Event
+from app.models.forum import ForumPost
+from app.models.message import Conversation, Message
+from app.models.poll import Poll, Vote
+from app.models.service import Service
+from app.models.user import User
+from app.services.event_service import EventService
+from app.services.scheduler_service import scheduler_service
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +165,8 @@ app.include_router(
     notifications.router, prefix="/api/notifications", tags=["notifications"]
 )
 app.include_router(achievements.router, prefix="/api", tags=["achievements"])
+app.include_router(location.router, prefix="/api/location", tags=["location"])
+app.include_router(books.router, prefix="/api/books", tags=["books"])
 
 
 @app.get("/health")

@@ -1,35 +1,36 @@
+import json
+from datetime import datetime, timezone
+from typing import Annotated
+
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
-    status,
-    Query,
-    UploadFile,
     File,
     Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from sqlalchemy.orm import selectinload
-from datetime import datetime, timezone
-import json
-from typing import Annotated
 from pydantic import BaseModel
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.core.dependencies import get_current_user, get_optional_current_user
+from app.core.rate_limit_decorator import read_rate_limit, service_create_rate_limit
 from app.database import get_db
-from app.models.service import Service
+from app.models.service import Service, ServiceType
 from app.models.user import User
+from app.schemas.common import ErrorResponse
 from app.schemas.service import (
     ServiceCreate,
     ServiceRead,
-    ServiceUpdate,
     ServiceSummary,
+    ServiceUpdate,
 )
-from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user, get_optional_current_user
-from app.core.rate_limit_decorator import service_create_rate_limit, read_rate_limit
-from app.services.matching_service import ServiceMatchingService
 from app.services.file_service import FileUploadService
+from app.services.matching_service import ServiceMatchingService
 
 
 class UserServiceStats(BaseModel):
@@ -70,8 +71,12 @@ async def get_services(
     exclude_own: Annotated[
         bool, Query(description="Exclude current user's services")
     ] = False,
+    service_type: Annotated[ServiceType | None, Query()] = None,
 ):
     query = select(Service).where(Service.is_active)
+
+    if service_type is not None:
+        query = query.where(Service.service_type == service_type)
 
     if is_offering is not None:
         query = query.where(Service.is_offering == is_offering)
