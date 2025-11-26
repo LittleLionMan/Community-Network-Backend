@@ -87,6 +87,22 @@ class GoogleBooksClient:
                     dict[str, Any], volume_info.get("imageLinks", {})
                 )
 
+                cover_image_url = None
+                if "large" in image_links:
+                    cover_image_url = str(image_links["large"])
+                elif "medium" in image_links:
+                    cover_image_url = str(image_links["medium"])
+                elif "thumbnail" in image_links:
+                    cover_image_url = str(image_links["thumbnail"])
+                elif "smallThumbnail" in image_links:
+                    cover_image_url = str(image_links["smallThumbnail"])
+
+                thumbnail_url = None
+                if "thumbnail" in image_links:
+                    thumbnail_url = str(image_links["thumbnail"])
+                elif "smallThumbnail" in image_links:
+                    thumbnail_url = str(image_links["smallThumbnail"])
+
                 metadata: BookMetadata = {
                     "isbn_13": isbn_13,
                     "isbn_10": isbn_10,
@@ -106,14 +122,8 @@ class GoogleBooksClient:
                     if "pageCount" in volume_info
                     else None,
                     "categories": cast(list[str], volume_info.get("categories", [])),
-                    "cover_image_url": str(image_links["large"])
-                    if "large" in image_links
-                    else (
-                        str(image_links["medium"]) if "medium" in image_links else None
-                    ),
-                    "thumbnail_url": str(image_links["thumbnail"])
-                    if "thumbnail" in image_links
-                    else None,
+                    "cover_image_url": cover_image_url,
+                    "thumbnail_url": thumbnail_url,
                 }
 
                 logger.info(f"Found book via Google Books: {metadata['title']}")

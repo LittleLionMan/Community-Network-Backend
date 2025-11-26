@@ -56,17 +56,8 @@ async def create_offer(
                 detail="Bitte hinterlege einen Standort in deinem Profil oder gib einen benutzerdefinierten Standort an.",
             )
 
-    if current_user.book_credits_remaining < 1:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Du hast keine Credits mehr. Nächste Aufladung: {current_user.book_credits_last_reset or 'unbekannt'}",
-        )
-
     book_service = BookService(db)
     offer = await book_service.create_offer(current_user.id, data)
-
-    current_user.book_credits_remaining -= 1
-    await db.commit()
 
     return offer
 
@@ -79,7 +70,11 @@ async def get_my_offers(
         str | None, Query(description="Filter: active, reserved, completed")
     ] = None,
 ):
-    query = select(BookOffer).where(BookOffer.owner_id == current_user.id)
+    query = (
+        select(BookOffer)
+        .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
+        .where(BookOffer.owner_id == current_user.id)
+    )
 
     if status_filter == "active":
         query = query.where(BookOffer.is_available)
@@ -155,7 +150,11 @@ async def get_offer(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User | None, Depends(get_optional_current_user)],
 ):
-    query = select(BookOffer).where(BookOffer.id == offer_id)
+    query = (
+        select(BookOffer)
+        .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
+        .where(BookOffer.id == offer_id)
+    )
     result = await db.execute(query)
     offer = result.scalar_one_or_none()
 
@@ -185,7 +184,8 @@ async def get_offer(
 async def get_marketplace(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User | None, Depends(get_optional_current_user)],
-    search: Annotated[str | None, Query(min_length=2)] = None,
+    book_id: Annotated[int | None, Query()] = None,
+    search: Annotated[str | None, Query()] = None,
     condition: Annotated[list[BookCondition] | None, Query()] = None,
     language: Annotated[str | None, Query()] = None,
     category: Annotated[str | None, Query()] = None,
@@ -195,11 +195,19 @@ async def get_marketplace(
     skip: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
+    if search:
+        search = search.strip()
+        if len(search) < 2:
+            search = None
+
     query = (
         select(BookOffer)
         .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
         .where(BookOffer.is_available)
     )
+
+    if book_id:
+        query = query.where(BookOffer.book_id == book_id)
 
     if current_user:
         query = query.where(BookOffer.owner_id != current_user.id)

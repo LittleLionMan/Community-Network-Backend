@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -15,6 +16,7 @@ from app.schemas.book_offer import (
     BookUserComment,
 )
 from app.schemas.user import UserSummary
+from app.services.file_service import FileUploadService
 from app.services.google_books_client import GoogleBooksClient
 from app.services.location_service import LocationService
 from app.services.open_library_client import OpenLibraryClient
@@ -69,19 +71,53 @@ class BookService:
 
         if existing_book:
             logger.info(f"Book found in DB: {existing_book.title}")
+
+            needs_enrichment = (
+                not existing_book.cover_image_url
+                or not existing_book.description
+                or existing_book.page_count is None
+                or existing_book.page_count == 0
+            )
+
+            if needs_enrichment:
+                logger.info(
+                    f"Book {existing_book.title} has missing data, attempting enrichment..."
+                )
+                enriched = await self._enrich_existing_book(existing_book, cleaned_isbn)
+                if enriched:
+                    await self.db.commit()
+                    await self.db.refresh(existing_book)
+                    logger.info(f"Successfully enriched book: {existing_book.title}")
+
             return existing_book
 
         logger.info(f"Book not in DB, searching external APIs for ISBN: {cleaned_isbn}")
-
-        metadata = await GoogleBooksClient.search_by_isbn(cleaned_isbn)
-
-        if not metadata:
-            logger.info("Google Books failed, trying Open Library...")
-            metadata = await OpenLibraryClient.search_by_isbn(cleaned_isbn)
+        metadata = await self._search_and_merge_apis(cleaned_isbn)
 
         if not metadata:
             logger.warning(f"No metadata found for ISBN: {cleaned_isbn}")
             return None
+
+        cover_url = metadata.get("cover_image_url")
+        local_cover_url = None
+
+        if cover_url:
+            cover_url_str = str(cover_url)
+            logger.info(f"Attempting to download cover from: {cover_url_str}")
+            try:
+                file_service = FileUploadService()
+                result = await file_service.download_and_save_book_cover(
+                    cover_url_str, cleaned_isbn
+                )
+                if result:
+                    _, local_cover_url = result
+                    logger.info(
+                        f"✅ Book cover downloaded and saved: {local_cover_url}"
+                    )
+                else:
+                    logger.warning("⚠️  Failed to download cover, will use original URL")
+            except Exception as e:
+                logger.error(f"Error downloading book cover: {e}")
 
         new_book = Book(
             isbn_13=metadata.get("isbn_13"),
@@ -94,7 +130,7 @@ class BookService:
             language=metadata.get("language", "de"),
             page_count=metadata.get("page_count"),
             categories=metadata.get("categories", []),
-            cover_image_url=metadata.get("cover_image_url"),
+            cover_image_url=local_cover_url or cover_url,
             thumbnail_url=metadata.get("thumbnail_url"),
         )
 
@@ -104,6 +140,100 @@ class BookService:
 
         logger.info(f"Created new book: {new_book.title} (ID: {new_book.id})")
         return new_book
+
+    async def _search_and_merge_apis(self, isbn: str) -> dict[str, object] | None:
+        google_data = await GoogleBooksClient.search_by_isbn(isbn)
+
+        if not google_data:
+            logger.info("Google Books failed, trying Open Library...")
+            openlib_data = await OpenLibraryClient.search_by_isbn(isbn)
+            return dict(openlib_data) if openlib_data else None
+
+        needs_openlib = (
+            not google_data.get("cover_image_url")
+            or not google_data.get("description")
+            or not google_data.get("page_count")
+            or google_data.get("page_count") == 0
+        )
+
+        if needs_openlib:
+            logger.info(
+                "Google Books data incomplete, fetching from Open Library for merge..."
+            )
+            openlib_data = await OpenLibraryClient.search_by_isbn(isbn)
+
+            if openlib_data:
+                if not google_data.get("cover_image_url"):
+                    google_data["cover_image_url"] = openlib_data.get("cover_image_url")
+
+                if not google_data.get("description"):
+                    google_data["description"] = openlib_data.get("description")
+
+                if (
+                    not google_data.get("page_count")
+                    or google_data.get("page_count") == 0
+                ):
+                    google_data["page_count"] = openlib_data.get("page_count")
+
+                if not google_data.get("publisher"):
+                    google_data["publisher"] = openlib_data.get("publisher")
+
+                logger.info("Successfully merged Google Books + Open Library data")
+
+        return dict(google_data)
+
+    async def _enrich_existing_book(self, book: Book, isbn: str) -> bool:
+        metadata = await self._search_and_merge_apis(isbn)
+
+        if not metadata:
+            return False
+
+        updated = False
+
+        if not book.cover_image_url and metadata.get("cover_image_url"):
+            cover_url = str(metadata["cover_image_url"])
+
+            try:
+                file_service = FileUploadService()
+                result = await file_service.download_and_save_book_cover(
+                    cover_url, isbn
+                )
+                if result:
+                    _, local_cover_url = result
+                    book.cover_image_url = local_cover_url
+                    updated = True
+                    logger.info(f"Added cover to existing book: {book.title}")
+                else:
+                    book.cover_image_url = cover_url
+                    updated = True
+            except Exception as e:
+                logger.error(f"Failed to download cover for existing book: {e}")
+                book.cover_image_url = cover_url
+                updated = True
+
+        if not book.description and metadata.get("description"):
+            book.description = str(metadata["description"])
+            updated = True
+            logger.info(f"Added description to existing book: {book.title}")
+
+        if (not book.page_count or book.page_count == 0) and metadata.get("page_count"):
+            page_count_val = metadata["page_count"]
+            try:
+                book.page_count = int(str(page_count_val)) if page_count_val else None
+            except (ValueError, TypeError):
+                book.page_count = None
+            updated = True
+            logger.info(f"Added page_count to existing book: {book.title}")
+
+        if not book.publisher and metadata.get("publisher"):
+            book.publisher = str(metadata["publisher"])
+            updated = True
+
+        if not book.thumbnail_url and metadata.get("thumbnail_url"):
+            book.thumbnail_url = str(metadata["thumbnail_url"])
+            updated = True
+
+        return updated
 
     async def create_offer(self, user_id: int, data: BookOfferCreate) -> BookOfferRead:
         book = await self.search_or_create_book(data.isbn)

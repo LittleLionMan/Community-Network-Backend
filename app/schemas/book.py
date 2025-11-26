@@ -12,7 +12,7 @@ class BookBase(BaseModel):
     publisher: str | None = Field(None, max_length=200)
     published_date: str | None = Field(None, max_length=50)
     language: str = Field(default="de", max_length=10)
-    page_count: int | None = Field(None, ge=1)
+    page_count: int | None = Field(None, ge=0)
     categories: list[str] = Field(default_factory=list)
     cover_image_url: str | None = Field(None, max_length=500)
     thumbnail_url: str | None = Field(None, max_length=500)

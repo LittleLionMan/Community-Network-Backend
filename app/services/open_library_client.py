@@ -33,7 +33,9 @@ class OpenLibraryClient:
         cleaned_isbn = isbn.replace("-", "").replace(" ", "").strip()
 
         try:
-            async with httpx.AsyncClient(timeout=cls.TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=cls.TIMEOUT, follow_redirects=True
+            ) as client:
                 response = await client.get(f"{cls.BASE_URL}/isbn/{cleaned_isbn}.json")
 
                 if response.status_code == 404:

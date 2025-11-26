@@ -23,11 +23,20 @@ async def create_book_exchange_service():
 
         if existing:
             print(f"✅ Service 'Bücherecke' existiert bereits (ID: {existing.id})")
+            print(f"   - Slug: {existing.slug}")
+            print(f"   - Image: {existing.service_image_url or 'Kein Bild'}")
+            print("   - URL: http://localhost:3000/services/buecherecke")
+            print("\n💡 Um ein Bild hinzuzufügen:")
+            print("   1. Login als Admin")
+            print("   2. Gehe zu /services/[service_id]")
+            print("   3. Klicke auf 'Edit' und lade ein Bild hoch")
+            print("\n📸 Empfohlenes Bild:")
+            print(
+                "   https://unsplash.com/photos/a-library-filled-with-lots-of-books-and-plants-xM5MYMCwhvA"
+            )
             return existing.id
 
-        admin_result = await db.execute(
-            select(User).where(User.is_admin == True).limit(1)
-        )
+        admin_result = await db.execute(select(User).where(User.is_admin).limit(1))
         admin_user = admin_result.scalar_one_or_none()
 
         if not admin_user:
@@ -44,19 +53,31 @@ async def create_book_exchange_service():
             is_offering=True,
             is_active=True,
             contact_method="message",
+            service_image_url=None,  # Will be added manually
         )
 
         db.add(service)
         await db.commit()
         await db.refresh(service)
 
-        print("✅ Service 'Bücherecke' erfolgreich erstellt!")
+        print("\n✅ Service 'Bücherecke' erfolgreich erstellt!")
         print(f"   - ID: {service.id}")
         print(f"   - Slug: {service.slug}")
         print(f"   - Type: {service.service_type.value}")
         print(f"   - Owner: {admin_user.display_name} (Admin)")
-        print(f"   - URL: http://localhost:3000/services/buecherecke")
-        print(f"\n🚀 Du kannst jetzt die Bücherecke nutzen!")
+        print("   - URL: http://localhost:3000/services/buecherecke")
+
+        print("\n📸 NÄCHSTER SCHRITT: Bild hinzufügen")
+        print("   1. Lade Bild herunter:")
+        print(
+            "      https://unsplash.com/photos/a-library-filled-with-lots-of-books-and-plants-xM5MYMCwhvA"
+        )
+        print("   2. Login als Admin ({admin_user.email})")
+        print("   3. Gehe zu: http://localhost:3000/services/[service_id]")
+        print("   4. Klicke auf 'Edit Service'")
+        print("   5. Lade das Bild hoch")
+
+        print("\n🚀 Service ist bereit - Bild fehlt noch!")
 
         return service.id
 

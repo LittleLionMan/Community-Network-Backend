@@ -1,18 +1,21 @@
-import os
-import io
 import hashlib
-import magic as python_magic
-from pathlib import Path
-from fastapi import HTTPException, UploadFile
-from datetime import datetime, timezone
-from PIL import Image
+import io
+import os
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+import magic as python_magic
+from fastapi import HTTPException, UploadFile
+from PIL import Image
 
 
 class FileUploadService:
     upload_base: Path
     profile_images_dir: Path
     service_images_dir: Path
+    book_covers_dir: Path
     max_file_size: int
     allowed_image_types: set[str]
     magic: python_magic.Magic
@@ -21,10 +24,12 @@ class FileUploadService:
         self.upload_base = Path(os.getenv("UPLOAD_DIR", "/app/uploads")).absolute()
         self.profile_images_dir = self.upload_base / "profile_images"
         self.service_images_dir = self.upload_base / "service_images"
+        self.book_covers_dir = self.upload_base / "book_covers"
         self.max_file_size = int(os.getenv("MAX_FILE_SIZE", "5242880"))
 
         self.profile_images_dir.mkdir(parents=True, exist_ok=True)
         self.service_images_dir.mkdir(parents=True, exist_ok=True)
+        self.book_covers_dir.mkdir(parents=True, exist_ok=True)
 
         self.allowed_image_types = {
             "image/jpeg",
@@ -34,6 +39,73 @@ class FileUploadService:
         }
 
         self.magic = python_magic.Magic(mime=True)
+
+    async def download_and_save_book_cover(
+        self, cover_url: str, isbn: str
+    ) -> tuple[str, str] | None:
+        if not cover_url:
+            return None
+
+        try:
+            if cover_url.startswith("http://books.google.com"):
+                cover_url = cover_url.replace("http://", "https://")
+
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(cover_url)
+                response.raise_for_status()
+                content = response.content
+
+            if len(content) > self.max_file_size:
+                print(f"Book cover too large: {len(content)} bytes")
+                return None
+
+            detected_mime = self.magic.from_buffer(content)
+            if detected_mime not in self.allowed_image_types:
+                print(f"Invalid image type for book cover: {detected_mime}")
+                return None
+
+            try:
+                image = Image.open(io.BytesIO(content))
+                image.verify()
+
+                image = Image.open(io.BytesIO(content))
+
+                if image.mode in ("RGBA", "LA", "P"):
+                    rgb_image = Image.new("RGB", image.size, (255, 255, 255))
+                    if image.mode == "RGBA":
+                        rgb_image.paste(image, mask=image.split()[-1])
+                    else:
+                        rgb_image.paste(image)
+                    image = rgb_image
+
+                max_size = (600, 900)
+                if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
+                    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+            except Exception as e:
+                print(f"Image processing error for book cover: {e}")
+                return None
+
+            file_hash = hashlib.sha256(content).hexdigest()[:16]
+            clean_isbn = isbn.replace("-", "").replace(" ", "")
+            filename = f"book_{clean_isbn}_{file_hash}.jpg"
+
+            file_path = self.book_covers_dir / filename
+
+            with open(file_path, "wb") as f:
+                image.save(f, format="JPEG", quality=85, optimize=True)
+
+            os.chmod(file_path, 0o644)
+
+            public_url = f"/uploads/book_covers/{filename}"
+            return str(file_path), public_url
+
+        except httpx.HTTPError as e:
+            print(f"Failed to download book cover from {cover_url}: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error downloading book cover: {e}")
+            return None
 
     async def upload_profile_image(
         self, file: UploadFile, user_id: int
