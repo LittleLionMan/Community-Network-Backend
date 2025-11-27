@@ -6,6 +6,7 @@ from .book_offer import BookCondition, BookOffer
 from .comment import Comment
 from .enums import ParticipationStatus, PollType
 from .event import Event, EventCategory, EventParticipation
+from .exchange_transaction import ExchangeTransaction
 from .forum import ForumCategory, ForumPost, ForumThread
 from .message import Conversation, ConversationParticipant, Message, MessageReadReceipt
 from .notification import Notification
@@ -41,4 +42,5 @@ __all__ = [
     "Book",
     "BookOffer",
     "BookCondition",
+    "ExchangeTransaction",
 ]

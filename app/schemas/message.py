@@ -1,18 +1,26 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field, ConfigDict
+
 from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .transaction import TransactionData
 from .user import UserSummary
+
 
 class MessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
     reply_to_id: int | None = None
 
+
 class MessageUpdate(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
+
 
 class ConversationCreate(BaseModel):
     participant_id: int
     initial_message: str = Field(..., min_length=1, max_length=2000)
+
 
 class MessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -29,6 +37,8 @@ class MessageResponse(BaseModel):
     reply_to_id: int | None = None
     reply_to: MessageResponse | None = None
     is_read: bool = False
+    transaction_data: TransactionData | None = None
+
 
 class ConversationParticipantResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -38,6 +48,7 @@ class ConversationParticipantResponse(BaseModel):
     last_read_at: datetime | None = None
     is_muted: bool
     is_archived: bool
+
 
 class ConversationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -50,6 +61,7 @@ class ConversationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 class ConversationDetailResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,6 +73,7 @@ class ConversationDetailResponse(BaseModel):
     updated_at: datetime
     has_more: bool = False
 
+
 class MessageListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,6 +83,7 @@ class MessageListResponse(BaseModel):
     size: int
     has_more: bool
 
+
 class ConversationListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -78,6 +92,7 @@ class ConversationListResponse(BaseModel):
     page: int
     size: int
     has_more: bool
+
 
 class MessageModerationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -92,22 +107,27 @@ class MessageModerationResponse(BaseModel):
     moderation_reason: str | None = None
     moderated_at: datetime | None = None
 
+
 class MessageModerationAction(BaseModel):
     action: str = Field(..., pattern="^(approve|reject|flag)$")
     reason: str | None = Field(None, max_length=500)
 
+
 class ConversationSettings(BaseModel):
     is_muted: bool | None = None
     is_archived: bool | None = None
+
 
 class MessagePrivacySettings(BaseModel):
     messages_enabled: bool | None = None
     messages_from_strangers: bool | None = None
     messages_notifications: bool | None = None
 
+
 class UnreadCountResponse(BaseModel):
     total_unread: int
     conversations: list[dict[str, object]]
+
 
 class WebSocketMessageEvent(BaseModel):
     type: str
@@ -115,5 +135,6 @@ class WebSocketMessageEvent(BaseModel):
     message: MessageResponse | None = None
     user_id: int | None = None
     data: dict[str, object] | None = None
+
 
 _ = MessageResponse.model_rebuild()

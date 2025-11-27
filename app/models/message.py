@@ -1,9 +1,15 @@
 from datetime import datetime
-from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, Index
+from typing import TYPE_CHECKING
+
+from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
+
 from .base import Base
 from .types import UTCDateTime
+
+if TYPE_CHECKING:
+    from .exchange_transaction import ExchangeTransaction
 
 
 class Conversation(Base):
@@ -97,6 +103,12 @@ class Message(Base):
     reply_to: Mapped["Message | None"] = relationship("Message", remote_side=[id])
     read_receipts: Mapped[list["MessageReadReceipt"]] = relationship(
         "MessageReadReceipt", back_populates="message", cascade="all, delete-orphan"
+    )
+    transaction_data: Mapped[dict[str, str | int | bool | None] | None] = mapped_column(
+        JSON
+    )
+    transaction: Mapped["ExchangeTransaction | None"] = relationship(
+        "ExchangeTransaction", back_populates="message", uselist=False
     )
 
     __table_args__: tuple[Index, ...] = (
