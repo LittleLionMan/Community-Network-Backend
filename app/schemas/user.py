@@ -1,6 +1,7 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
-from datetime import datetime
 import re
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class UserCreate(BaseModel):
@@ -62,6 +63,8 @@ class UserPublic(BaseModel):
     last_name: str | None = None
     bio: str | None = None
     location: str | None = None
+    location_district: str | None = None
+    book_credits_remaining: int
     created_at: datetime | None = None
     profile_image_url: str | None = None
 
@@ -76,6 +79,9 @@ class UserAdmin(BaseModel):
     last_name: str | None = None
     bio: str | None = None
     location: str | None = None
+    location_district: str | None = None
+    book_credits_remaining: int
+    book_credits_last_reset: datetime | None = None
     is_active: bool
     is_admin: bool
     created_at: datetime
@@ -94,6 +100,9 @@ class UserPrivate(BaseModel):
     last_name: str | None = None
     bio: str | None = None
     location: str | None = None
+    location_district: str | None = None
+    book_credits_remaining: int
+    book_credits_last_reset: datetime | None = None
     is_active: bool
     is_admin: bool
     created_at: datetime

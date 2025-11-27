@@ -2,7 +2,7 @@ import math
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -13,11 +13,8 @@ from app.models.book import Book
 from app.models.book_offer import BookCondition, BookOffer
 from app.models.user import User
 from app.schemas.book import BookRead
-from app.schemas.book_offer import (
-    BookOfferCreate,
-    BookOfferRead,
-    BookOfferUpdate,
-)
+from app.schemas.book_offer import BookOfferCreate, BookOfferRead, BookOfferUpdate
+from app.schemas.pagination import PaginatedBookOfferResponse
 from app.services.book_service import BookService
 from app.services.location_service import LocationService
 
@@ -179,7 +176,7 @@ async def get_offer(
     )
 
 
-@router.get("/marketplace")
+@router.get("/marketplace", response_model=PaginatedBookOfferResponse)
 @read_rate_limit("service_listing")
 async def get_marketplace(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -187,10 +184,10 @@ async def get_marketplace(
     book_id: Annotated[int | None, Query()] = None,
     search: Annotated[str | None, Query()] = None,
     condition: Annotated[list[BookCondition] | None, Query()] = None,
-    language: Annotated[str | None, Query()] = None,
-    category: Annotated[str | None, Query()] = None,
+    language: Annotated[list[str] | None, Query()] = None,
+    category: Annotated[list[str] | None, Query()] = None,
     max_distance_km: Annotated[float | None, Query(ge=1, le=100)] = None,
-    district: Annotated[str | None, Query()] = None,
+    district: Annotated[list[str] | None, Query()] = None,
     has_comments: Annotated[bool | None, Query()] = False,
     skip: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -220,22 +217,68 @@ async def get_marketplace(
             BookOffer.user_comment.isnot(None), BookOffer.user_comment != ""
         )
 
+    book_joined = False
+
     if search:
-        query = query.join(Book).where(
+        query = query.join(Book)
+        book_joined = True
+        query = query.where(
             or_(
                 Book.title.ilike(f"%{search}%"),
-                Book.authors.astext.ilike(f"%{search}%"),
+                func.cast(Book.authors, String).ilike(f"%{search}%"),
             )
         )
 
+    LANGUAGE_REVERSE_MAP = {
+        "deutsch": ["de", "ger", "german"],
+        "englisch": ["en", "eng", "english"],
+        "französisch": ["fr", "fre", "french"],
+        "spanisch": ["es", "spa", "spanish"],
+        "italienisch": ["it", "ita", "italian"],
+        "niederländisch": ["nl", "dut", "dutch"],
+        "portugiesisch": ["pt", "por", "portuguese"],
+        "russisch": ["ru", "rus", "russian"],
+        "chinesisch": ["zh", "chi", "chinese"],
+        "japanisch": ["ja", "jpn", "japanese"],
+    }
+
     if language:
-        query = query.join(Book).where(Book.language == language)
+        iso_codes = []
+        for lang in language:
+            lang_lower = lang.lower()
+            if lang_lower in LANGUAGE_REVERSE_MAP:
+                iso_codes.extend(LANGUAGE_REVERSE_MAP[lang_lower])
+            else:
+                iso_codes.append(lang)
+        language = iso_codes
+
+    if language:
+        if not book_joined:
+            query = query.join(Book)
+            book_joined = True
+        query = query.where(
+            func.lower(Book.language).in_([code.lower() for code in language])
+        )
 
     if category:
-        query = query.join(Book).where(Book.categories.astext.ilike(f"%{category}%"))
+        if not book_joined:
+            query = query.join(Book)
+            book_joined = True
+
+        category_filters = []
+        for cat in category:
+            category_filters.append(
+                func.lower(func.cast(Book.categories, String)).like(f"%{cat.lower()}%")
+            )
+        if category_filters:
+            query = query.where(or_(*category_filters))
 
     if district:
-        query = query.where(BookOffer.location_district.ilike(f"%{district}%"))
+        district_filters = []
+        for dist in district:
+            district_filters.append(BookOffer.location_district.ilike(f"%{dist}%"))
+        if district_filters:
+            query = query.where(or_(*district_filters))
 
     if max_distance_km and current_user:
         if current_user.location_lat and current_user.location_lon:
@@ -255,6 +298,9 @@ async def get_marketplace(
                     ),
                 )
             )
+
+    count_query = select(func.count()).select_from(query.subquery())
+    total = await db.scalar(count_query) or 0
 
     query = query.order_by(BookOffer.created_at.desc()).offset(skip).limit(limit)
 
@@ -285,7 +331,13 @@ async def get_marketplace(
             )
         )
 
-    return offer_reads
+    return {
+        "items": offer_reads,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total,
+    }
 
 
 @router.get("/stats")
@@ -322,3 +374,84 @@ async def get_stats(
         stats["my_available"] = (await db.execute(my_available_query)).scalar() or 0
 
     return stats
+
+
+@router.get("/filters/options")
+@read_rate_limit("service_listing")
+async def get_filter_options(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_optional_current_user)],
+):
+    districts_query = (
+        select(BookOffer.location_district)
+        .where(BookOffer.location_district.isnot(None), BookOffer.is_available == True)
+        .distinct()
+    )
+    districts_result = await db.execute(districts_query)
+    districts = sorted([d for d in districts_result.scalars().all() if d and d.strip()])
+
+    categories_query = select(Book.categories).distinct()
+    categories_result = await db.execute(categories_query)
+
+    categories_map = {}
+    for cat_list in categories_result.scalars().all():
+        if cat_list and isinstance(cat_list, list):
+            for cat in cat_list:
+                if cat and cat.strip():
+                    cat_lower = cat.strip().lower()
+                    if cat_lower not in categories_map:
+                        normalized = cat.strip().title()
+                        categories_map[cat_lower] = normalized
+
+    categories = sorted(list(set(categories_map.values())))
+
+    languages_query = select(Book.language).where(Book.language.isnot(None)).distinct()
+    languages_result = await db.execute(languages_query)
+
+    LANGUAGE_MAP = {
+        "de": "Deutsch",
+        "ger": "Deutsch",
+        "german": "Deutsch",
+        "en": "Englisch",
+        "eng": "Englisch",
+        "english": "Englisch",
+        "fr": "Französisch",
+        "fre": "Französisch",
+        "french": "Französisch",
+        "es": "Spanisch",
+        "spa": "Spanisch",
+        "spanish": "Spanisch",
+        "it": "Italienisch",
+        "ita": "Italienisch",
+        "italian": "Italienisch",
+        "nl": "Niederländisch",
+        "dut": "Niederländisch",
+        "dutch": "Niederländisch",
+        "pt": "Portugiesisch",
+        "por": "Portugiesisch",
+        "portuguese": "Portugiesisch",
+        "ru": "Russisch",
+        "rus": "Russisch",
+        "russian": "Russisch",
+        "zh": "Chinesisch",
+        "chi": "Chinesisch",
+        "chinese": "Chinesisch",
+        "ja": "Japanisch",
+        "jpn": "Japanisch",
+        "japanese": "Japanisch",
+    }
+
+    language_set = set()
+    for lang_code in languages_result.scalars().all():
+        if lang_code and lang_code.strip():
+            lang_lower = lang_code.strip().lower()
+            readable = LANGUAGE_MAP.get(lang_lower, lang_code.strip().capitalize())
+            language_set.add(readable)
+
+    languages = sorted(list(language_set))
+
+    return {
+        "districts": districts,
+        "categories": categories,
+        "languages": languages,
+    }

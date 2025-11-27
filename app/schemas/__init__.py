@@ -39,6 +39,7 @@ from .forum import (
     ForumThreadRead,
     ForumThreadUpdate,
 )
+from .pagination import PaginatedBookOfferResponse
 from .poll import (
     PollCreate,
     PollOptionCreate,
@@ -115,5 +116,6 @@ __all__ = [
     "BookOfferRead",
     "BookOfferSummary",
     "BookUserComment",
+    "PaginatedBookOfferResponse",
     "CONDITION_LABELS",
 ]
