@@ -37,6 +37,7 @@ from app.api import (
     notifications,
     polls,
     services,
+    transactions,
     users,
 )
 from app.config import settings
@@ -167,6 +168,7 @@ app.include_router(
 app.include_router(achievements.router, prefix="/api", tags=["achievements"])
 app.include_router(location.router, prefix="/api/location", tags=["location"])
 app.include_router(books.router, prefix="/api/books", tags=["books"])
+app.include_router(transactions.router, prefix="/api")
 
 
 @app.get("/health")

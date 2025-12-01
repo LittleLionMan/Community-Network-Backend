@@ -95,6 +95,10 @@ class Message(Base):
 
     reply_to_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"))
 
+    transaction_data: Mapped[dict[str, str | int | bool | None] | None] = mapped_column(
+        JSON
+    )
+
     conversation: Mapped["Conversation"] = relationship(
         "Conversation", back_populates="messages"
     )
@@ -103,9 +107,6 @@ class Message(Base):
     reply_to: Mapped["Message | None"] = relationship("Message", remote_side=[id])
     read_receipts: Mapped[list["MessageReadReceipt"]] = relationship(
         "MessageReadReceipt", back_populates="message", cascade="all, delete-orphan"
-    )
-    transaction_data: Mapped[dict[str, str | int | bool | None] | None] = mapped_column(
-        JSON
     )
     transaction: Mapped["ExchangeTransaction | None"] = relationship(
         "ExchangeTransaction", back_populates="message", uselist=False

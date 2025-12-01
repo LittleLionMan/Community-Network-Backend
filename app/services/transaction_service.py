@@ -3,8 +3,9 @@ from datetime import datetime, timedelta, timezone
 from typing import TypedDict
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.book_offer import BookOffer
 from app.models.exchange_transaction import (
@@ -19,17 +20,17 @@ from app.models.exchange_transaction import (
 from app.models.message import Message
 from app.models.user import User
 from app.schemas.transaction import (
-    TransactionAccept,
-    TransactionCancel,
-    TransactionConfirmHandover,
-    TransactionConfirmTime,
+    AcceptTransactionRequest,
+    CancelTransactionRequest,
+    ConfirmHandoverRequest,
+    ConfirmTimeRequest,
+    ProposeTimeRequest,
+    RejectTransactionRequest,
     TransactionCreate,
     TransactionData,
     TransactionHistoryItem,
     TransactionOfferInfo,
     TransactionParticipantInfo,
-    TransactionProposeTime,
-    TransactionReject,
 )
 from app.schemas.transaction import (
     TransactionStatus as SchemaTransactionStatus,
@@ -85,11 +86,71 @@ class TransactionService:
                 detail="Active transaction already exists for this offer",
             )
 
+        if conversation_id == 0:
+            from app.models.message import Conversation, ConversationParticipant
+
+            result = await self.db.execute(
+                select(Conversation)
+                .join(ConversationParticipant)
+                .where(ConversationParticipant.user_id.in_([requester_id, provider_id]))
+                .group_by(Conversation.id)
+                .having(func.count(ConversationParticipant.user_id) == 2)
+            )
+            existing_conversation = result.scalar_one_or_none()
+
+            if existing_conversation:
+                conversation_id = existing_conversation.id
+            else:
+                new_conversation = Conversation(
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                    is_active=True,
+                )
+                self.db.add(new_conversation)
+                await self.db.flush()
+
+                for user_id in [requester_id, provider_id]:
+                    participant = ConversationParticipant(
+                        conversation_id=new_conversation.id,
+                        user_id=user_id,
+                        joined_at=datetime.now(timezone.utc),
+                    )
+                    self.db.add(participant)
+
+                await self.db.flush()
+                conversation_id = new_conversation.id
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=7)
 
+        proposed_times_iso = [
+            t.isoformat() if isinstance(t, datetime) else t for t in data.proposed_times
+        ]
+
+        initial_message = Message(
+            conversation_id=conversation_id,
+            sender_id=requester_id,
+            message_type="text",
+            content=data.initial_message,
+            created_at=now,
+        )
+        self.db.add(initial_message)
+        await self.db.flush()
+
+        token_message = Message(
+            conversation_id=conversation_id,
+            sender_id=requester_id,
+            message_type="transaction_token",
+            content=f"Transaction für {offer_info['title']}",
+            transaction_data={},
+            created_at=now,
+        )
+        self.db.add(token_message)
+        await self.db.flush()
+
         transaction = ExchangeTransaction(
-            transaction_type=ModelTransactionType(data.transaction_type.value),
+            message_id=token_message.id,
+            transaction_type=data.transaction_type.value,
             offer_type=data.offer_type,
             offer_id=data.offer_id,
             requester_id=requester_id,
@@ -97,7 +158,7 @@ class TransactionService:
             status=ModelTransactionStatus.PENDING,
             created_at=now,
             expires_at=expires_at,
-            proposed_times=data.proposed_times,
+            proposed_times=proposed_times_iso,
             exact_address=offer_info.get("location_address"),
             transaction_metadata=self._build_metadata(data, offer_info),
         )
@@ -105,30 +166,34 @@ class TransactionService:
         self.db.add(transaction)
         await self.db.flush()
 
-        message = Message(
-            conversation_id=conversation_id,
-            sender_id=requester_id,
-            message_type="transaction_token",
-            content=data.initial_message,
-            transaction_data=transaction.to_transaction_data(),
-            created_at=now,
+        token_message.transaction_data = await self._build_transaction_data_dict(
+            transaction, requester_id
         )
-        self.db.add(message)
-        await self.db.flush()
 
-        transaction.message_id = message.id
         await self.db.commit()
         await self.db.refresh(transaction)
 
-        logger.info(f"Transaction {transaction.id} created by user {requester_id}")
+        logger.info(
+            f"Transaction {transaction.id} created by user {requester_id} in conversation {conversation_id}"
+        )
 
         return await self._build_transaction_data(transaction, requester_id)
+
+    async def _build_transaction_data_dict(
+        self,
+        transaction: ExchangeTransaction,
+        current_user_id: int,
+    ) -> dict[str, str | int | bool | None]:
+        transaction_data = await self._build_transaction_data(
+            transaction, current_user_id
+        )
+        return transaction_data.model_dump(mode="json")
 
     async def accept_transaction(
         self,
         transaction_id: int,
         user_id: int,
-        data: TransactionAccept,
+        data: AcceptTransactionRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -152,16 +217,6 @@ class TransactionService:
         message = await self._get_message(transaction.message_id)
         message.transaction_data = transaction.to_transaction_data()
 
-        if data.message:
-            system_message = Message(
-                conversation_id=message.conversation_id,
-                sender_id=user_id,
-                message_type="text",
-                content=data.message,
-                created_at=datetime.now(timezone.utc),
-            )
-            self.db.add(system_message)
-
         await self.db.commit()
         await self.db.refresh(transaction)
 
@@ -173,7 +228,7 @@ class TransactionService:
         self,
         transaction_id: int,
         user_id: int,
-        data: TransactionReject,
+        data: RejectTransactionRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -205,7 +260,7 @@ class TransactionService:
         self,
         transaction_id: int,
         user_id: int,
-        data: TransactionProposeTime,
+        data: ProposeTimeRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -241,7 +296,7 @@ class TransactionService:
         self,
         transaction_id: int,
         user_id: int,
-        data: TransactionConfirmTime,
+        data: ConfirmTimeRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -253,8 +308,12 @@ class TransactionService:
         if not transaction.can_be_updated():
             raise HTTPException(status_code=400, detail="Transaction cannot be updated")
 
+        confirmed_dt = datetime.fromisoformat(
+            data.confirmed_time.replace("Z", "+00:00")
+        )
+
         transaction.status = ModelTransactionStatus.TIME_CONFIRMED
-        transaction.confirmed_time = data.confirmed_time
+        transaction.confirmed_time = confirmed_dt
         transaction.exact_address = data.exact_address
         transaction.time_confirmed_at = datetime.now(timezone.utc)
 
@@ -271,10 +330,7 @@ class TransactionService:
         return await self._build_transaction_data(transaction, user_id)
 
     async def confirm_handover(
-        self,
-        transaction_id: int,
-        user_id: int,
-        data: TransactionConfirmHandover,
+        self, transaction_id: int, user_id: int, data: ConfirmHandoverRequest
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -292,12 +348,6 @@ class TransactionService:
             transaction.requester_confirmed_handover = True
         else:
             transaction.provider_confirmed_handover = True
-
-        if data.notes:
-            if user_id == transaction.requester_id:
-                transaction.transaction_metadata["requester_notes"] = data.notes
-            else:
-                transaction.transaction_metadata["provider_notes"] = data.notes
 
         if (
             transaction.requester_confirmed_handover
@@ -327,7 +377,7 @@ class TransactionService:
         self,
         transaction_id: int,
         user_id: int,
-        data: TransactionCancel,
+        data: CancelTransactionRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -342,10 +392,6 @@ class TransactionService:
             )
 
         transaction.status = ModelTransactionStatus.CANCELLED
-
-        if data.reason:
-            transaction.transaction_metadata["cancellation_reason"] = data.reason
-            transaction.transaction_metadata["cancelled_by"] = str(user_id)
 
         message = await self._get_message(transaction.message_id)
         message.transaction_data = transaction.to_transaction_data()
@@ -402,16 +448,17 @@ class TransactionService:
 
             items.append(
                 TransactionHistoryItem(
-                    id=t.id,
-                    transaction_type=SchemaTransactionType(t.transaction_type.value),
-                    status=SchemaTransactionStatus(t.status.value),
+                    transaction_id=t.id,
+                    transaction_type=SchemaTransactionType(t.transaction_type),
+                    status=SchemaTransactionStatus(t.status),
                     offer_title=offer_info["title"],
                     offer_thumbnail=offer_info["thumbnail_url"],
                     counterpart_name=other_user.display_name,
                     counterpart_avatar=other_user.profile_image_url,
-                    confirmed_time=t.confirmed_time,
+                    confirmed_time=t.confirmed_time.isoformat()
+                    if t.confirmed_time
+                    else None,
                     created_at=t.created_at,
-                    updated_at=t.time_confirmed_at or t.created_at,
                 )
             )
 
@@ -436,7 +483,9 @@ class TransactionService:
     async def _get_offer_info(self, offer_type: str, offer_id: int) -> OfferInfo:
         if offer_type == "book_offer":
             result = await self.db.execute(
-                select(BookOffer).where(BookOffer.id == offer_id)
+                select(BookOffer)
+                .options(selectinload(BookOffer.book))
+                .where(BookOffer.id == offer_id)
             )
             offer = result.scalar_one_or_none()
             if not offer:
@@ -496,28 +545,30 @@ class TransactionService:
 
         return TransactionData(
             transaction_id=transaction.id,
-            transaction_type=SchemaTransactionType(transaction.transaction_type.value),
-            status=SchemaTransactionStatus(transaction.status.value),
+            transaction_type=SchemaTransactionType(transaction.transaction_type),
+            status=SchemaTransactionStatus(transaction.status),
             offer=TransactionOfferInfo(
-                offer_id=transaction.offer_id,
-                offer_type=transaction.offer_type,
                 title=offer_info["title"],
                 thumbnail_url=offer_info["thumbnail_url"],
                 condition=offer_info["condition"],
-                metadata={},
             ),
             requester=TransactionParticipantInfo(
                 id=transaction.requester_id,
                 display_name=users[transaction.requester_id].display_name,
-                profile_image_url=users[transaction.requester_id].profile_image_url,
+                avatar_url=users[transaction.requester_id].profile_image_url,
             ),
             provider=TransactionParticipantInfo(
                 id=transaction.provider_id,
                 display_name=users[transaction.provider_id].display_name,
-                profile_image_url=users[transaction.provider_id].profile_image_url,
+                avatar_url=users[transaction.provider_id].profile_image_url,
             ),
-            proposed_times=transaction.proposed_times,
-            confirmed_time=transaction.confirmed_time,
+            proposed_times=[
+                t.isoformat() if isinstance(t, datetime) else t
+                for t in transaction.proposed_times
+            ],
+            confirmed_time=transaction.confirmed_time.isoformat()
+            if transaction.confirmed_time
+            else None,
             exact_address=transaction.exact_address
             if transaction.status
             in (ModelTransactionStatus.TIME_CONFIRMED, ModelTransactionStatus.COMPLETED)
@@ -525,9 +576,7 @@ class TransactionService:
             requester_confirmed=transaction.requester_confirmed_handover,
             provider_confirmed=transaction.provider_confirmed_handover,
             created_at=transaction.created_at,
-            updated_at=transaction.time_confirmed_at or transaction.created_at,
             expires_at=transaction.expires_at,
-            is_expired=transaction.is_expired(),
             can_accept=is_provider
             and transaction.status == ModelTransactionStatus.PENDING
             and can_update,
@@ -541,7 +590,6 @@ class TransactionService:
             can_confirm_handover=can_update
             and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
             can_cancel=can_update,
-            metadata=transaction.transaction_metadata,
         )
 
     def _build_metadata(

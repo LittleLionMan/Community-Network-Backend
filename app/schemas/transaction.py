@@ -1,7 +1,14 @@
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class TransactionType(str, Enum):
+    BOOK_EXCHANGE = "book_exchange"
+    BOOK_PURCHASE = "book_purchase"
 
 
 class TransactionStatus(str, Enum):
@@ -14,15 +21,9 @@ class TransactionStatus(str, Enum):
     EXPIRED = "expired"
 
 
-class TransactionType(str, Enum):
-    BOOK_EXCHANGE = "book_exchange"
-    SERVICE_MEETUP = "service_meetup"
-    EVENT_CONFIRMATION = "event_confirmation"
-
-
 class TransactionCreate(BaseModel):
-    offer_type: str = Field(..., description="Type of offer (e.g., 'book_offer')")
-    offer_id: int = Field(..., gt=0)
+    offer_type: str
+    offer_id: int
     transaction_type: TransactionType
     initial_message: str = Field(..., min_length=1, max_length=2000)
     proposed_times: list[datetime] = Field(default_factory=list, max_length=5)
@@ -30,137 +31,131 @@ class TransactionCreate(BaseModel):
     @field_validator("proposed_times")
     @classmethod
     def validate_proposed_times(cls, v: list[datetime]) -> list[datetime]:
-        now = datetime.now()
-        future_times = [t for t in v if t > now]
-        return future_times[:5]
+        if not v:
+            return v
+
+        now = datetime.now(timezone.utc)
+
+        future_times = []
+        for t in v:
+            if t.tzinfo is None:
+                t_aware = t.replace(tzinfo=timezone.utc)
+            else:
+                t_aware = t
+
+            if t_aware > now:
+                future_times.append(t_aware)
+
+        if not future_times and v:
+            raise ValueError("All proposed times must be in the future")
+
+        return future_times
 
 
-class TransactionAccept(BaseModel):
-    message: str | None = Field(None, max_length=1000)
+class AcceptTransactionRequest(BaseModel):
+    pass
 
 
-class TransactionReject(BaseModel):
+class RejectTransactionRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
-class TransactionProposeTime(BaseModel):
+class ProposeTimeRequest(BaseModel):
     proposed_time: datetime
 
     @field_validator("proposed_time")
     @classmethod
-    def validate_future_time(cls, v: datetime) -> datetime:
-        if v <= datetime.now():
+    def validate_proposed_time(cls, v: datetime) -> datetime:
+        now = datetime.now(timezone.utc)
+
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+
+        if v <= now:
             raise ValueError("Proposed time must be in the future")
+
         return v
 
 
-class TransactionConfirmTime(BaseModel):
-    confirmed_time: datetime
-    exact_address: str = Field(..., min_length=5, max_length=500)
+class ConfirmTimeRequest(BaseModel):
+    confirmed_time: str
+    exact_address: str = Field(..., min_length=1, max_length=500)
 
     @field_validator("confirmed_time")
     @classmethod
-    def validate_future_time(cls, v: datetime) -> datetime:
-        if v <= datetime.now():
-            raise ValueError("Confirmed time must be in the future")
-        return v
+    def validate_confirmed_time(cls, v: str) -> str:
+        try:
+            dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+            if dt <= now:
+                raise ValueError("Confirmed time must be in the future")
+
+            return v
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"Invalid datetime format: {e}")
 
 
-class TransactionCancel(BaseModel):
-    reason: str | None = Field(None, max_length=500)
+class ConfirmHandoverRequest(BaseModel):
+    pass
 
 
-class TransactionConfirmHandover(BaseModel):
-    notes: str | None = Field(None, max_length=500)
+class CancelTransactionRequest(BaseModel):
+    pass
 
 
 class TransactionOfferInfo(BaseModel):
-    offer_id: int
-    offer_type: str
+    model_config = ConfigDict(from_attributes=True)
+
     title: str
     thumbnail_url: str | None = None
     condition: str | None = None
-    metadata: dict[str, str | int | bool | list[str] | None]
 
 
 class TransactionParticipantInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     display_name: str
-    profile_image_url: str | None = None
+    avatar_url: str | None = None
 
 
 class TransactionData(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     transaction_id: int
     transaction_type: TransactionType
     status: TransactionStatus
-
     offer: TransactionOfferInfo
-
     requester: TransactionParticipantInfo
     provider: TransactionParticipantInfo
-
-    proposed_times: list[datetime] = Field(default_factory=list)
-    confirmed_time: datetime | None = None
+    proposed_times: list[str]
+    confirmed_time: str | None = None
     exact_address: str | None = None
-
-    requester_confirmed: bool = False
-    provider_confirmed: bool = False
-
+    requester_confirmed: bool
+    provider_confirmed: bool
     created_at: datetime
-    updated_at: datetime
-    expires_at: datetime
-
-    is_expired: bool = False
-    can_accept: bool = False
-    can_reject: bool = False
-    can_propose_time: bool = False
-    can_confirm_time: bool = False
-    can_confirm_handover: bool = False
-    can_cancel: bool = False
-
-    metadata: dict[str, str | int | bool | list[str] | None] = Field(
-        default_factory=dict
-    )
-
-
-class TransactionResponse(BaseModel):
-    id: int
-    message_id: int
-    transaction_type: TransactionType
-    status: TransactionStatus
-    offer_type: str
-    offer_id: int
-
-    requester_id: int
-    provider_id: int
-
-    proposed_times: list[datetime]
-    confirmed_time: datetime | None
-    exact_address: str | None
-
-    requester_confirmed_handover: bool
-    provider_confirmed_handover: bool
-
-    credit_amount: int
-    credit_transferred: bool
-
-    created_at: datetime
-    accepted_at: datetime | None
-    time_confirmed_at: datetime | None
-    completed_at: datetime | None
-    expires_at: datetime
-
-    metadata: dict[str, str | int | bool | list[str] | None]
+    expires_at: datetime | None = None
+    can_accept: bool
+    can_reject: bool
+    can_propose_time: bool
+    can_confirm_time: bool
+    can_confirm_handover: bool
+    can_cancel: bool
 
 
 class TransactionHistoryItem(BaseModel):
-    id: int
+    model_config = ConfigDict(from_attributes=True)
+
+    transaction_id: int
     transaction_type: TransactionType
     status: TransactionStatus
     offer_title: str
-    offer_thumbnail: str | None
+    offer_thumbnail: str | None = None
     counterpart_name: str
-    counterpart_avatar: str | None
-    confirmed_time: datetime | None
+    counterpart_avatar: str | None = None
     created_at: datetime
-    updated_at: datetime
+    confirmed_time: str | None = None
