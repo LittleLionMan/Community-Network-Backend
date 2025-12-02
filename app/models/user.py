@@ -113,6 +113,12 @@ class User(Base):
         back_populates="reserved_by",
     )
 
+    availability_slots: Mapped[list["UserAvailability"]] = relationship(
+        "UserAvailability",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
     __table_args__ = (
         Index("idx_user_location_coords", "location_lat", "location_lon"),
     )

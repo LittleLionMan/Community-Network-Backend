@@ -13,6 +13,7 @@ from .notification import Notification
 from .poll import Poll, PollOption, Vote
 from .service import Service
 from .user import User
+from .user_availability import UserAvailability
 
 __all__ = [
     "Base",
@@ -43,4 +44,5 @@ __all__ = [
     "BookOffer",
     "BookCondition",
     "ExchangeTransaction",
+    "UserAvailability",
 ]

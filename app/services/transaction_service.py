@@ -15,14 +15,14 @@ from app.models.exchange_transaction import (
     TransactionStatus as ModelTransactionStatus,
 )
 from app.models.exchange_transaction import (
-    TransactionType as ModelTransactionType,
+    TransactionStatus as SchemaTransactionStatus,
+)
+from app.models.exchange_transaction import (
+    TransactionType as SchemaTransactionType,
 )
 from app.models.message import Message
 from app.models.user import User
 from app.schemas.transaction import (
-    AcceptTransactionRequest,
-    CancelTransactionRequest,
-    ConfirmHandoverRequest,
     ConfirmTimeRequest,
     ProposeTimeRequest,
     RejectTransactionRequest,
@@ -32,12 +32,7 @@ from app.schemas.transaction import (
     TransactionOfferInfo,
     TransactionParticipantInfo,
 )
-from app.schemas.transaction import (
-    TransactionStatus as SchemaTransactionStatus,
-)
-from app.schemas.transaction import (
-    TransactionType as SchemaTransactionType,
-)
+from app.services.availability_service import AvailabilityService
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +188,6 @@ class TransactionService:
         self,
         transaction_id: int,
         user_id: int,
-        data: AcceptTransactionRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -215,7 +209,7 @@ class TransactionService:
         transaction.accepted_at = datetime.now(timezone.utc)
 
         message = await self._get_message(transaction.message_id)
-        message.transaction_data = transaction.to_transaction_data()
+        message.transaction_data = transaction.to_flat_transaction_data()
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -247,7 +241,7 @@ class TransactionService:
         transaction.transaction_metadata["rejection_reason"] = data.reason
 
         message = await self._get_message(transaction.message_id)
-        message.transaction_data = transaction.to_transaction_data()
+        message.transaction_data = transaction.to_flat_transaction_data()
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -272,23 +266,46 @@ class TransactionService:
         if not transaction.can_be_updated():
             raise HTTPException(status_code=400, detail="Transaction cannot be updated")
 
-        if data.proposed_time in transaction.proposed_times:
-            raise HTTPException(status_code=400, detail="Time already proposed")
+        proposed_iso = data.proposed_time.isoformat()
 
-        if len(transaction.proposed_times) >= 10:
-            raise HTTPException(
-                status_code=400, detail="Maximum number of proposed times reached"
+        is_provider = user_id == transaction.provider_id
+
+        if is_provider:
+            provider_available = await AvailabilityService.check_time_available(
+                db=self.db,
+                user_id=transaction.provider_id,
+                check_start=data.proposed_time,
+                check_end=data.proposed_time + timedelta(hours=1),
             )
 
-        transaction.proposed_times = [*transaction.proposed_times, data.proposed_time]
+            if not provider_available:
+                raise HTTPException(
+                    status_code=409, detail="You are not available at this time"
+                )
+        else:
+            provider_available = await AvailabilityService.check_time_available(
+                db=self.db,
+                user_id=transaction.provider_id,
+                check_start=data.proposed_time,
+                check_end=data.proposed_time + timedelta(hours=1),
+            )
+
+            if not provider_available:
+                raise HTTPException(
+                    status_code=409, detail="Provider is not available at this time"
+                )
+
+        transaction.proposed_times = [proposed_iso]
 
         message = await self._get_message(transaction.message_id)
-        message.transaction_data = transaction.to_transaction_data()
+        message.transaction_data = transaction.to_flat_transaction_data()
 
         await self.db.commit()
         await self.db.refresh(transaction)
 
-        logger.info(f"Time proposed for transaction {transaction_id} by user {user_id}")
+        logger.info(
+            f"Time proposed for transaction {transaction_id} by user {user_id}, previous times cleared"
+        )
 
         return await self._build_transaction_data(transaction, user_id)
 
@@ -312,13 +329,34 @@ class TransactionService:
             data.confirmed_time.replace("Z", "+00:00")
         )
 
+        provider_available = await AvailabilityService.check_time_available(
+            db=self.db,
+            user_id=transaction.provider_id,
+            check_start=confirmed_dt,
+            check_end=confirmed_dt + timedelta(hours=1),
+        )
+
+        if not provider_available:
+            raise HTTPException(
+                status_code=409, detail="Provider is not available at this time"
+            )
+
         transaction.status = ModelTransactionStatus.TIME_CONFIRMED
         transaction.confirmed_time = confirmed_dt
         transaction.exact_address = data.exact_address
         transaction.time_confirmed_at = datetime.now(timezone.utc)
 
+        _ = await AvailabilityService.block_time_for_transaction(
+            db=self.db,
+            transaction_id=transaction.id,
+            user_id=transaction.provider_id,
+            start_time=confirmed_dt,
+            end_time=confirmed_dt + timedelta(hours=1),
+            title=f"Buchübergabe: {transaction.transaction_metadata.get('offer_title', 'Unbekannt')}",
+        )
+
         message = await self._get_message(transaction.message_id)
-        message.transaction_data = transaction.to_transaction_data()
+        message.transaction_data = transaction.to_flat_transaction_data()
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -330,7 +368,7 @@ class TransactionService:
         return await self._build_transaction_data(transaction, user_id)
 
     async def confirm_handover(
-        self, transaction_id: int, user_id: int, data: ConfirmHandoverRequest
+        self, transaction_id: int, user_id: int
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -362,7 +400,7 @@ class TransactionService:
             )
 
         message = await self._get_message(transaction.message_id)
-        message.transaction_data = transaction.to_transaction_data()
+        message.transaction_data = transaction.to_flat_transaction_data()
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -377,7 +415,6 @@ class TransactionService:
         self,
         transaction_id: int,
         user_id: int,
-        data: CancelTransactionRequest,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -393,8 +430,13 @@ class TransactionService:
 
         transaction.status = ModelTransactionStatus.CANCELLED
 
+        await AvailabilityService.remove_transaction_blocks(
+            db=self.db,
+            transaction_id=transaction.id,
+        )
+
         message = await self._get_message(transaction.message_id)
-        message.transaction_data = transaction.to_transaction_data()
+        message.transaction_data = transaction.to_flat_transaction_data()
 
         await self.db.commit()
         await self.db.refresh(transaction)

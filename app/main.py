@@ -26,6 +26,7 @@ from app.api import (
     admin_rate_limits,
     admin_security,
     auth,
+    availability,
     books,
     comments,
     discussions,
@@ -168,7 +169,12 @@ app.include_router(
 app.include_router(achievements.router, prefix="/api", tags=["achievements"])
 app.include_router(location.router, prefix="/api/location", tags=["location"])
 app.include_router(books.router, prefix="/api/books", tags=["books"])
-app.include_router(transactions.router, prefix="/api")
+app.include_router(
+    transactions.router, prefix="/api/transactions", tags=["transactions"]
+)
+app.include_router(
+    availability.router, prefix="/api/availability", tags=["availability"]
+)
 
 
 @app.get("/health")

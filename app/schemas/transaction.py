@@ -1,30 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
-class TransactionType(str, Enum):
-    BOOK_EXCHANGE = "book_exchange"
-    BOOK_PURCHASE = "book_purchase"
-
-
-class TransactionStatus(str, Enum):
-    PENDING = "pending"
-    ACCEPTED = "accepted"
-    TIME_CONFIRMED = "time_confirmed"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
+from app.models.exchange_transaction import TransactionStatus, TransactionType
 
 
 class TransactionCreate(BaseModel):
-    offer_type: str
-    offer_id: int
-    transaction_type: TransactionType
+    offer_type: str = Field(..., max_length=30)
+    offer_id: int = Field(..., gt=0)
+    transaction_type: TransactionType = TransactionType.BOOK_EXCHANGE
     initial_message: str = Field(..., min_length=1, max_length=2000)
     proposed_times: list[datetime] = Field(default_factory=list, max_length=5)
 
@@ -104,7 +90,7 @@ class ConfirmHandoverRequest(BaseModel):
 
 
 class CancelTransactionRequest(BaseModel):
-    pass
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class TransactionOfferInfo(BaseModel):

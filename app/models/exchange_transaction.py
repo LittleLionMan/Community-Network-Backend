@@ -1,12 +1,14 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import cast
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 from .types import UTCDateTime
+
+type JSONValue = str | int | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 
 
 class TransactionStatus(str, Enum):
@@ -56,7 +58,7 @@ class ExchangeTransaction(Base):
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
-    proposed_times: Mapped[list[datetime]] = mapped_column(
+    proposed_times: Mapped[list[str]] = mapped_column(
         JSON, nullable=False, default=list
     )
     confirmed_time: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -69,7 +71,7 @@ class ExchangeTransaction(Base):
 
     exact_address: Mapped[str | None] = mapped_column(String(500))
 
-    transaction_metadata: Mapped[dict[str, Any]] = mapped_column(
+    transaction_metadata: Mapped[dict[str, JSONValue]] = mapped_column(
         "metadata", JSON, nullable=False, default=dict
     )
 
@@ -107,7 +109,14 @@ class ExchangeTransaction(Base):
             and not self.is_expired()
         )
 
-    def to_transaction_data(self) -> dict[str, Any]:
+    def to_flat_transaction_data(self) -> dict[str, str | int | bool | None]:
+        proposed_times_str = ",".join(
+            [
+                t.isoformat() if isinstance(t, datetime) else t
+                for t in self.proposed_times
+            ]
+        )
+
         return {
             "transaction_id": self.id,
             "transaction_type": self.transaction_type.value,
@@ -116,7 +125,36 @@ class ExchangeTransaction(Base):
             "status": self.status.value,
             "requester_id": self.requester_id,
             "provider_id": self.provider_id,
-            "proposed_times": [t.isoformat() for t in self.proposed_times],
+            "proposed_times": proposed_times_str,
+            "confirmed_time": self.confirmed_time.isoformat()
+            if self.confirmed_time
+            else None,
+            "exact_address": self.exact_address
+            if self.status
+            in (TransactionStatus.TIME_CONFIRMED, TransactionStatus.COMPLETED)
+            else None,
+            "requester_confirmed": self.requester_confirmed_handover,
+            "provider_confirmed": self.provider_confirmed_handover,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": (self.time_confirmed_at or self.created_at).isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+            "offer_title": str(self.transaction_metadata.get("offer_title", "")),
+        }
+
+    def to_transaction_data(self) -> dict[str, JSONValue]:
+        proposed_times_iso = [
+            t.isoformat() if isinstance(t, datetime) else t for t in self.proposed_times
+        ]
+
+        return {
+            "transaction_id": self.id,
+            "transaction_type": self.transaction_type.value,
+            "offer_type": self.offer_type,
+            "offer_id": self.offer_id,
+            "status": self.status.value,
+            "requester_id": self.requester_id,
+            "provider_id": self.provider_id,
+            "proposed_times": cast(list[JSONValue], proposed_times_iso),
             "confirmed_time": self.confirmed_time.isoformat()
             if self.confirmed_time
             else None,
