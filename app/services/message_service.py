@@ -1,8 +1,10 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, desc, delete
-from sqlalchemy.orm import selectinload
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import and_, delete, desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from ..core.auth import generate_new_message_notification_email, send_email
 from ..models.message import (
     Conversation,
     ConversationParticipant,
@@ -12,20 +14,19 @@ from ..models.message import (
 from ..models.user import User
 from ..schemas.message import (
     ConversationCreate,
-    MessageCreate,
-    MessageUpdate,
-    ConversationResponse,
-    MessageResponse,
     ConversationDetailResponse,
-    MessageListResponse,
     ConversationListResponse,
-    UnreadCountResponse,
     ConversationParticipantResponse,
+    ConversationResponse,
+    MessageCreate,
+    MessageListResponse,
+    MessageResponse,
+    MessageUpdate,
+    UnreadCountResponse,
 )
 from ..schemas.user import UserSummary
 from .moderation_service import ModerationService
 from .websocket_service import websocket_manager
-from ..core.auth import send_email, generate_new_message_notification_email
 
 
 class MessageService:
@@ -655,6 +656,7 @@ class MessageService:
             reply_to_id=message.reply_to_id,
             reply_to=reply_to,
             is_read=is_read,
+            transaction_data=message.transaction_data,
         )
 
     async def _format_conversation(

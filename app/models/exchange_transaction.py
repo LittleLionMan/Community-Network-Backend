@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -71,8 +71,8 @@ class ExchangeTransaction(Base):
 
     exact_address: Mapped[str | None] = mapped_column(String(500))
 
-    transaction_metadata: Mapped[dict[str, JSONValue]] = mapped_column(
-        "metadata", JSON, nullable=False, default=dict
+    transaction_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False
     )
 
     message: Mapped["Message"] = relationship("Message", back_populates="transaction")

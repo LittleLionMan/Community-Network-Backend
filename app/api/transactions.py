@@ -6,19 +6,18 @@ from app.database import get_db
 from app.models.exchange_transaction import TransactionStatus as ModelTransactionStatus
 from app.models.user import User
 from app.schemas.transaction import (
-    AcceptTransactionRequest,
     CancelTransactionRequest,
     ConfirmHandoverRequest,
     ConfirmTimeRequest,
     ProposeTimeRequest,
-    RejectTransactionRequest,
     TransactionCreate,
     TransactionData,
     TransactionHistoryItem,
+    UpdateAddressRequest,
 )
 from app.services.transaction_service import TransactionService
 
-router = APIRouter(prefix="/transactions", tags=["transactions"])
+router = APIRouter()
 
 
 @router.post("", response_model=TransactionData, status_code=status.HTTP_201_CREATED)
@@ -42,28 +41,6 @@ async def create_transaction(
     )
 
 
-@router.post("/{transaction_id}/accept", response_model=TransactionData)
-async def accept_transaction(
-    transaction_id: int,
-    data: AcceptTransactionRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> TransactionData:
-    service = TransactionService(db)
-    return await service.accept_transaction(transaction_id, current_user.id)
-
-
-@router.post("/{transaction_id}/reject", response_model=TransactionData)
-async def reject_transaction(
-    transaction_id: int,
-    data: RejectTransactionRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> TransactionData:
-    service = TransactionService(db)
-    return await service.reject_transaction(transaction_id, current_user.id, data)
-
-
 @router.post("/{transaction_id}/propose-time", response_model=TransactionData)
 async def propose_time(
     transaction_id: int,
@@ -84,6 +61,21 @@ async def confirm_time(
 ) -> TransactionData:
     service = TransactionService(db)
     return await service.confirm_time(transaction_id, current_user.id, data)
+
+
+@router.put("/{transaction_id}/address", response_model=TransactionData)
+async def update_transaction_address(
+    transaction_id: int,
+    data: UpdateAddressRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TransactionData:
+    service = TransactionService(db)
+    return await service.update_exact_address(
+        transaction_id=transaction_id,
+        user_id=current_user.id,
+        new_address=data.exact_address,
+    )
 
 
 @router.post("/{transaction_id}/confirm-handover", response_model=TransactionData)

@@ -38,14 +38,6 @@ class TransactionCreate(BaseModel):
         return future_times
 
 
-class AcceptTransactionRequest(BaseModel):
-    pass
-
-
-class RejectTransactionRequest(BaseModel):
-    reason: str = Field(..., min_length=1, max_length=500)
-
-
 class ProposeTimeRequest(BaseModel):
     proposed_time: datetime
 
@@ -61,6 +53,10 @@ class ProposeTimeRequest(BaseModel):
             raise ValueError("Proposed time must be in the future")
 
         return v
+
+
+class UpdateAddressRequest(BaseModel):
+    exact_address: str = Field(..., min_length=1, max_length=500)
 
 
 class ConfirmTimeRequest(BaseModel):
@@ -125,8 +121,6 @@ class TransactionData(BaseModel):
     provider_confirmed: bool
     created_at: datetime
     expires_at: datetime | None = None
-    can_accept: bool
-    can_reject: bool
     can_propose_time: bool
     can_confirm_time: bool
     can_confirm_handover: bool

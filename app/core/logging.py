@@ -1,7 +1,9 @@
-import logging
 import json
+import logging
 from datetime import datetime, timezone
+
 from fastapi import Request
+
 from app.core.telegram import TelegramNotifier, notify_telegram
 
 
@@ -20,7 +22,7 @@ def get_user_agent(request: Request) -> str:
 
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.ERROR, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
 security_logger = logging.getLogger("security")

@@ -4,7 +4,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .transaction import TransactionData
 from .user import UserSummary
 
 
@@ -37,7 +36,7 @@ class MessageResponse(BaseModel):
     reply_to_id: int | None = None
     reply_to: MessageResponse | None = None
     is_read: bool = False
-    transaction_data: TransactionData | None = None
+    transaction_data: dict[str, str | int | bool | None] | None = None
 
 
 class ConversationParticipantResponse(BaseModel):
