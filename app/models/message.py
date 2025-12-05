@@ -83,6 +83,9 @@ class Message(Base):
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=func.now())
     edited_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_activity_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, server_default=func.now(), nullable=False
+    )
 
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_edited: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -114,6 +117,7 @@ class Message(Base):
 
     __table_args__: tuple[Index, ...] = (
         Index("idx_messages_conversation_created", "conversation_id", "created_at"),
+        Index("idx_messages_last_activity", "conversation_id", "last_activity_at"),
         Index("idx_messages_sender", "sender_id"),
         Index("idx_messages_moderation", "moderation_status", "is_flagged"),
         Index("idx_messages_not_deleted", "is_deleted", "created_at"),

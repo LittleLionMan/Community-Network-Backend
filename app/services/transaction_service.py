@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -15,12 +15,9 @@ from app.models.exchange_transaction import (
     TransactionStatus as ModelTransactionStatus,
 )
 from app.models.exchange_transaction import (
-    TransactionStatus as SchemaTransactionStatus,
+    TransactionType as ModelTransactionType,
 )
-from app.models.exchange_transaction import (
-    TransactionType as SchemaTransactionType,
-)
-from app.models.message import Message
+from app.models.message import Conversation, ConversationParticipant, Message
 from app.models.user import User
 from app.schemas.transaction import (
     ConfirmTimeRequest,
@@ -32,6 +29,7 @@ from app.schemas.transaction import (
     TransactionParticipantInfo,
 )
 from app.services.availability_service import AvailabilityService
+from app.services.websocket_service import websocket_manager
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +47,149 @@ class TransactionService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _count_active_transactions(self, user_id: int) -> int:
+        result = await self.db.execute(
+            select(func.count(ExchangeTransaction.id)).where(
+                ExchangeTransaction.requester_id == user_id,
+                ExchangeTransaction.status.in_(
+                    [
+                        ModelTransactionStatus.PENDING,
+                        ModelTransactionStatus.TIME_CONFIRMED,
+                    ]
+                ),
+            )
+        )
+        return result.scalar_one()
+
+    def _serialize_transaction_for_message(
+        self,
+        transaction: ExchangeTransaction,
+        requester_name: str,
+        provider_name: str,
+        requester_avatar: str | None,
+        provider_avatar: str | None,
+        offer_title: str,
+        offer_thumbnail: str | None,
+        offer_condition: str | None,
+        current_user_id: int,
+    ) -> dict[str, str | int | bool | None]:
+        proposed_times_str = ",".join(
+            [
+                t.isoformat() if isinstance(t, datetime) else t
+                for t in transaction.proposed_times
+            ]
+        )
+
+        proposed_by = transaction.transaction_metadata.get("proposed_by_user_id")
+
+        is_provider = current_user_id == transaction.provider_id
+        can_update = transaction.can_be_updated()
+
+        can_propose_time = (
+            can_update and transaction.status == ModelTransactionStatus.PENDING
+        )
+
+        can_confirm_time = (
+            can_update
+            and transaction.status == ModelTransactionStatus.PENDING
+            and len(transaction.proposed_times) > 0
+            and proposed_by is not None
+            and proposed_by != current_user_id
+        )
+
+        can_edit_address = (
+            is_provider
+            and transaction.status == ModelTransactionStatus.PENDING
+            and can_update
+        )
+
+        return {
+            "transaction_id": transaction.id,
+            "transaction_type": transaction.transaction_type
+            if isinstance(transaction.transaction_type, str)
+            else transaction.transaction_type.value,
+            "status": transaction.status.value
+            if hasattr(transaction.status, "value")
+            else transaction.status,
+            "offer_id": transaction.offer_id,
+            "offer_type": transaction.offer_type,
+            "offer_title": offer_title,
+            "offer_thumbnail_url": offer_thumbnail,
+            "offer_condition": offer_condition,
+            "requester_id": transaction.requester_id,
+            "requester_display_name": requester_name,
+            "requester_profile_image_url": requester_avatar,
+            "provider_id": transaction.provider_id,
+            "provider_display_name": provider_name,
+            "provider_profile_image_url": provider_avatar,
+            "proposed_times": proposed_times_str,
+            "confirmed_time": transaction.confirmed_time.isoformat()
+            if transaction.confirmed_time
+            else None,
+            "exact_address": transaction.exact_address,
+            "requester_confirmed": transaction.requester_confirmed_handover,
+            "provider_confirmed": transaction.provider_confirmed_handover,
+            "created_at": transaction.created_at.isoformat(),
+            "updated_at": (
+                transaction.time_confirmed_at or transaction.created_at
+            ).isoformat(),
+            "expires_at": transaction.expires_at.isoformat()
+            if transaction.expires_at
+            else None,
+            "is_expired": transaction.is_expired(),
+            "can_propose_time": can_propose_time,
+            "can_confirm_time": can_confirm_time,
+            "can_edit_address": can_edit_address,
+            "can_confirm_handover": can_update
+            and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
+            "can_cancel": can_update
+            and transaction.status
+            in (ModelTransactionStatus.PENDING, ModelTransactionStatus.TIME_CONFIRMED),
+        }
+
+    async def _update_message_transaction_data(
+        self,
+        transaction: ExchangeTransaction,
+        user_id: int,
+    ) -> None:
+        message = await self._get_message(transaction.message_id)
+
+        result = await self.db.execute(
+            select(User).where(
+                User.id.in_([transaction.requester_id, transaction.provider_id])
+            )
+        )
+        users = {u.id: u for u in result.scalars().all()}
+
+        offer_info = await self._get_offer_info(
+            transaction.offer_type, transaction.offer_id
+        )
+
+        message.transaction_data = self._serialize_transaction_for_message(
+            transaction=transaction,
+            requester_name=users[transaction.requester_id].display_name,
+            provider_name=users[transaction.provider_id].display_name,
+            requester_avatar=users[transaction.requester_id].profile_image_url,
+            provider_avatar=users[transaction.provider_id].profile_image_url,
+            offer_title=offer_info["title"],
+            offer_thumbnail=offer_info["thumbnail_url"],
+            offer_condition=offer_info["condition"],
+            current_user_id=user_id,
+        )
+
+        message.last_activity_at = datetime.now(timezone.utc)
+
+        await websocket_manager.send_to_conversation(
+            message.conversation_id,
+            {
+                "type": "transaction_updated",
+                "conversation_id": message.conversation_id,
+                "message_id": message.id,
+                "transaction_id": transaction.id,
+                "transaction_data": message.transaction_data,
+            },
+        )
+
     async def create_transaction(
         self,
         requester_id: int,
@@ -59,6 +200,24 @@ class TransactionService:
         if requester_id == provider_id:
             raise HTTPException(
                 status_code=400, detail="Cannot create transaction with yourself"
+            )
+
+        result = await self.db.execute(select(User).where(User.id == requester_id))
+        requester = result.scalar_one_or_none()
+        if not requester:
+            raise HTTPException(status_code=404, detail="Requester not found")
+
+        if requester.book_credits_remaining < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Insufficient credits. You need at least 1 credit to request a book.",
+            )
+
+        active_count = await self._count_active_transactions(requester_id)
+        if active_count >= requester.book_credits_remaining:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Too many active transactions. You can only have {requester.book_credits_remaining} active transaction(s) at a time. Cancel an existing transaction to start a new one.",
             )
 
         offer_info = await self._get_offer_info(data.offer_type, data.offer_id)
@@ -81,38 +240,9 @@ class TransactionService:
             )
 
         if conversation_id == 0:
-            from app.models.message import Conversation, ConversationParticipant
-
-            result = await self.db.execute(
-                select(Conversation)
-                .join(ConversationParticipant)
-                .where(ConversationParticipant.user_id.in_([requester_id, provider_id]))
-                .group_by(Conversation.id)
-                .having(func.count(ConversationParticipant.user_id) == 2)
+            conversation_id = await self._get_or_create_conversation(
+                requester_id, provider_id
             )
-            existing_conversation = result.scalar_one_or_none()
-
-            if existing_conversation:
-                conversation_id = existing_conversation.id
-            else:
-                new_conversation = Conversation(
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
-                    is_active=True,
-                )
-                self.db.add(new_conversation)
-                await self.db.flush()
-
-                for user_id in [requester_id, provider_id]:
-                    participant = ConversationParticipant(
-                        conversation_id=new_conversation.id,
-                        user_id=user_id,
-                        joined_at=datetime.now(timezone.utc),
-                    )
-                    self.db.add(participant)
-
-                await self.db.flush()
-                conversation_id = new_conversation.id
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=7)
@@ -128,20 +258,18 @@ class TransactionService:
             content=data.initial_message,
             transaction_data={},
             created_at=now,
+            last_activity_at=now,
         )
         self.db.add(transaction_message)
         await self.db.flush()
 
-        # Get meeting_location from BookOffer
         meeting_location = await self._get_meeting_location_from_offer(
             data.offer_type, data.offer_id
         )
 
-        # Build metadata with proposed_by tracking
         transaction_metadata = self._build_metadata(
             data, offer_info, requester_id if proposed_times_iso else None
         )
-        print(f"🔍 CREATE Transaction Metadata: {transaction_metadata}")
 
         transaction = ExchangeTransaction(
             message_id=transaction_message.id,
@@ -161,163 +289,30 @@ class TransactionService:
         self.db.add(transaction)
         await self.db.flush()
 
-        # Reserve the offer
         if data.offer_type == "book_offer":
-            result = await self.db.execute(
-                select(BookOffer).where(BookOffer.id == data.offer_id)
-            )
-            book_offer = result.scalar_one_or_none()
-            if book_offer:
-                book_offer.reserved_until = expires_at
-                book_offer.reserved_by_user_id = requester_id
-                logger.info(
-                    f"Reserved book offer {data.offer_id} for user {requester_id} until {expires_at}"
-                )
-
-        try:
-            transaction_data_dict = await self._build_transaction_data_dict(
-                transaction, requester_id
-            )
-        except Exception:
-            raise
-
-        try:
-            transaction_message.transaction_data = transaction_data_dict
-        except Exception as e:
-            logger.error(f"❌ Failed to assign transaction_data: {e}")
-            raise
-
-        try:
-            await self.db.commit()
-        except Exception as e:
-            logger.error(f"   ❌ ERROR committing: {e}")
-            raise
-
-        try:
-            await self.db.refresh(transaction_message)
-        except Exception as e:
-            logger.error(f"   ❌ ERROR refreshing: {e}")
-            raise
-
-        return await self._build_transaction_data(transaction, requester_id)
-
-    async def _get_meeting_location_from_offer(
-        self, offer_type: str, offer_id: int
-    ) -> str:
-        """Get meeting location from offer (district only for privacy)."""
-        if offer_type == "book_offer":
-            result = await self.db.execute(
-                select(BookOffer).where(BookOffer.id == offer_id)
-            )
-            offer = result.scalar_one_or_none()
-            if offer and offer.location_district:
-                return f"{offer.location_district}, Münster"
-        return "Münster"
-
-    async def _build_transaction_data_dict(
-        self,
-        transaction: ExchangeTransaction,
-        current_user_id: int,
-    ) -> dict[str, Any | None]:
-        offer_info = await self._get_offer_info(
-            transaction.offer_type, transaction.offer_id
-        )
+            await self._reserve_book_offer(data.offer_id, requester_id, expires_at)
 
         result = await self.db.execute(
-            select(User).where(
-                User.id.in_([transaction.requester_id, transaction.provider_id])
-            )
+            select(User).where(User.id.in_([requester_id, provider_id]))
         )
         users = {u.id: u for u in result.scalars().all()}
 
-        is_provider = current_user_id == transaction.provider_id
-        can_update = transaction.can_be_updated()
-
-        proposed_times_str = ",".join(
-            [
-                t.isoformat() if isinstance(t, datetime) else t
-                for t in transaction.proposed_times
-            ]
+        transaction_message.transaction_data = self._serialize_transaction_for_message(
+            transaction=transaction,
+            requester_name=users[requester_id].display_name,
+            provider_name=users[provider_id].display_name,
+            requester_avatar=users[requester_id].profile_image_url,
+            provider_avatar=users[provider_id].profile_image_url,
+            offer_title=offer_info["title"],
+            offer_thumbnail=offer_info["thumbnail_url"],
+            offer_condition=offer_info["condition"],
+            current_user_id=requester_id,
         )
 
-        # Get who proposed the current time
-        proposed_by = transaction.transaction_metadata.get("proposed_by_user_id")
+        await self.db.commit()
+        await self.db.refresh(transaction_message)
 
-        # DEBUG
-        print(f"\n🔍 _build_transaction_data_dict DEBUG:")
-        print(f"   current_user_id: {current_user_id}")
-        print(f"   is_provider: {is_provider}")
-        print(f"   proposed_by: {proposed_by}")
-        print(f"   proposed_times count: {len(transaction.proposed_times)}")
-        print(f"   can_update: {can_update}")
-        print(f"   status: {transaction.status}")
-        print(f"   metadata: {transaction.transaction_metadata}")
-
-        can_confirm_calc = (
-            can_update
-            and transaction.status == ModelTransactionStatus.PENDING
-            and len(transaction.proposed_times) > 0
-            and proposed_by is not None
-            and proposed_by != current_user_id
-        )
-        print(f"   can_confirm_time: {can_confirm_calc}")
-
-        can_edit_calc = (
-            is_provider
-            and transaction.status == ModelTransactionStatus.PENDING
-            and can_update
-        )
-        print(f"   can_edit_address: {can_edit_calc}\n")
-
-        return {
-            "transaction_id": transaction.id,
-            "transaction_type": transaction.transaction_type
-            if isinstance(transaction.transaction_type, str)
-            else transaction.transaction_type.value,
-            "status": transaction.status.value
-            if hasattr(transaction.status, "value")
-            else transaction.status,
-            "offer_id": transaction.offer_id,
-            "offer_type": transaction.offer_type,
-            "offer_title": offer_info["title"],
-            "offer_thumbnail_url": offer_info["thumbnail_url"],
-            "offer_condition": offer_info["condition"],
-            "requester_id": transaction.requester_id,
-            "requester_display_name": users[transaction.requester_id].display_name,
-            "requester_profile_image_url": users[
-                transaction.requester_id
-            ].profile_image_url,
-            "provider_id": transaction.provider_id,
-            "provider_display_name": users[transaction.provider_id].display_name,
-            "provider_profile_image_url": users[
-                transaction.provider_id
-            ].profile_image_url,
-            "proposed_times": proposed_times_str,
-            "confirmed_time": transaction.confirmed_time.isoformat()
-            if transaction.confirmed_time
-            else None,
-            "exact_address": transaction.exact_address,
-            "requester_confirmed": transaction.requester_confirmed_handover,
-            "provider_confirmed": transaction.provider_confirmed_handover,
-            "created_at": transaction.created_at.isoformat(),
-            "updated_at": (
-                transaction.time_confirmed_at or transaction.created_at
-            ).isoformat(),
-            "expires_at": transaction.expires_at.isoformat()
-            if transaction.expires_at
-            else None,
-            "is_expired": transaction.is_expired(),
-            "can_propose_time": can_update
-            and transaction.status == ModelTransactionStatus.PENDING,
-            "can_confirm_time": can_confirm_calc,
-            "can_edit_address": can_edit_calc,
-            "can_confirm_handover": can_update
-            and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
-            "can_cancel": can_update
-            and transaction.status
-            in (ModelTransactionStatus.PENDING, ModelTransactionStatus.TIME_CONFIRMED),
-            "metadata": dict(transaction.transaction_metadata),
-        }
+        return await self._build_transaction_data(transaction, requester_id)
 
     async def propose_time(
         self,
@@ -342,10 +337,8 @@ class TransactionService:
             raise HTTPException(status_code=400, detail="Transaction cannot be updated")
 
         proposed_iso = data.proposed_time.isoformat()
-
         is_provider = user_id == transaction.provider_id
 
-        # Optional warning if provider proposes time when not available
         if is_provider:
             provider_available = await AvailabilityService.check_time_available(
                 db=self.db,
@@ -355,22 +348,15 @@ class TransactionService:
             )
 
             if not provider_available:
-                logger.warning(
-                    f"Provider {user_id} proposed time when not available - allowing anyway"
-                )
+                logger.warning(f"Provider {user_id} proposed time when not available")
 
         transaction.proposed_times = [proposed_iso]
-        # Track who proposed this time - create new dict to avoid mutation issues
+
         new_metadata = dict(transaction.transaction_metadata)
         new_metadata["proposed_by_user_id"] = user_id
         transaction.transaction_metadata = new_metadata
-        print(f"🔍 PROPOSE_TIME: Set proposed_by_user_id to {user_id}")
-        print(f"   Metadata now: {transaction.transaction_metadata}")
 
-        message = await self._get_message(transaction.message_id)
-        message.transaction_data = await self._build_transaction_data_dict(
-            transaction, user_id
-        )
+        await self._update_message_transaction_data(transaction, user_id)
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -418,16 +404,12 @@ class TransactionService:
 
         transaction.status = ModelTransactionStatus.TIME_CONFIRMED
         transaction.confirmed_time = confirmed_dt
-        # Use existing exact_address or fallback to provided one
+
         if not transaction.exact_address:
             transaction.exact_address = data.exact_address
+
         transaction.time_confirmed_at = datetime.now(timezone.utc)
-        # Extend expiration to 1 year once time is confirmed
-        old_expires = transaction.expires_at
         transaction.expires_at = confirmed_dt + timedelta(days=365)
-        print(
-            f"🔍 CONFIRM_TIME: Extended expires_at from {old_expires} to {transaction.expires_at}"
-        )
 
         _ = await AvailabilityService.block_time_for_transaction(
             db=self.db,
@@ -438,10 +420,7 @@ class TransactionService:
             title=f"Buchübergabe: {transaction.transaction_metadata.get('offer_title', 'Unbekannt')}",
         )
 
-        message = await self._get_message(transaction.message_id)
-        message.transaction_data = await self._build_transaction_data_dict(
-            transaction, user_id
-        )
+        await self._update_message_transaction_data(transaction, user_id)
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -458,7 +437,6 @@ class TransactionService:
         user_id: int,
         new_address: str,
     ) -> TransactionData:
-        """Update exact address. Only provider can update, only before time confirmation."""
         transaction = await self._get_transaction_or_404(transaction_id)
 
         if transaction.provider_id != user_id:
@@ -474,10 +452,7 @@ class TransactionService:
 
         transaction.exact_address = new_address
 
-        message = await self._get_message(transaction.message_id)
-        message.transaction_data = await self._build_transaction_data_dict(
-            transaction, user_id
-        )
+        await self._update_message_transaction_data(transaction, user_id)
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -520,10 +495,7 @@ class TransactionService:
                 transaction.offer_type, transaction.offer_id
             )
 
-        message = await self._get_message(transaction.message_id)
-        message.transaction_data = await self._build_transaction_data_dict(
-            transaction, user_id
-        )
+        await self._update_message_transaction_data(transaction, user_id)
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -553,28 +525,15 @@ class TransactionService:
 
         transaction.status = ModelTransactionStatus.CANCELLED
 
-        # Unreserve the offer
         if transaction.offer_type == "book_offer":
-            result = await self.db.execute(
-                select(BookOffer).where(BookOffer.id == transaction.offer_id)
-            )
-            book_offer = result.scalar_one_or_none()
-            if book_offer:
-                book_offer.reserved_until = None
-                book_offer.reserved_by_user_id = None
-                logger.info(
-                    f"Unreserved book offer {transaction.offer_id} after cancellation"
-                )
+            await self._unreserve_book_offer(transaction.offer_id)
 
         await AvailabilityService.remove_transaction_blocks(
             db=self.db,
             transaction_id=transaction.id,
         )
 
-        message = await self._get_message(transaction.message_id)
-        message.transaction_data = await self._build_transaction_data_dict(
-            transaction, user_id
-        )
+        await self._update_message_transaction_data(transaction, user_id)
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -629,8 +588,8 @@ class TransactionService:
             items.append(
                 TransactionHistoryItem(
                     transaction_id=t.id,
-                    transaction_type=SchemaTransactionType(t.transaction_type),
-                    status=SchemaTransactionStatus(t.status),
+                    transaction_type=ModelTransactionType(t.transaction_type),
+                    status=ModelTransactionStatus(t.status),
                     offer_title=offer_info["title"],
                     offer_thumbnail=offer_info["thumbnail_url"],
                     counterpart_name=other_user.display_name,
@@ -643,6 +602,21 @@ class TransactionService:
             )
 
         return items
+
+    async def get_user_available_request_slots(self, user_id: int) -> dict[str, int]:
+        result = await self.db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        active_count = await self._count_active_transactions(user_id)
+        available_slots = max(0, user.book_credits_remaining - active_count)
+
+        return {
+            "total_credits": user.book_credits_remaining,
+            "active_transactions": active_count,
+            "available_slots": available_slots,
+        }
 
     async def _get_transaction_or_404(self, transaction_id: int) -> ExchangeTransaction:
         result = await self.db.execute(
@@ -703,6 +677,137 @@ class TransactionService:
         )
         return result.scalar_one_or_none()
 
+    async def _get_or_create_conversation(self, user1_id: int, user2_id: int) -> int:
+        subquery = (
+            select(ConversationParticipant.conversation_id)
+            .where(ConversationParticipant.user_id == user1_id)
+            .intersect(
+                select(ConversationParticipant.conversation_id).where(
+                    ConversationParticipant.user_id == user2_id
+                )
+            )
+        )
+
+        result = await self.db.execute(
+            select(Conversation).where(Conversation.id.in_(subquery)).limit(1)
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            return existing.id
+
+        now = datetime.now(timezone.utc)
+        new_conversation = Conversation(
+            created_at=now,
+            updated_at=now,
+            is_active=True,
+        )
+        self.db.add(new_conversation)
+        await self.db.flush()
+
+        for user_id in [user1_id, user2_id]:
+            participant = ConversationParticipant(
+                conversation_id=new_conversation.id,
+                user_id=user_id,
+                joined_at=now,
+            )
+            self.db.add(participant)
+
+        await self.db.flush()
+        return new_conversation.id
+
+    async def _get_meeting_location_from_offer(
+        self, offer_type: str, offer_id: int
+    ) -> str:
+        if offer_type == "book_offer":
+            result = await self.db.execute(
+                select(BookOffer).where(BookOffer.id == offer_id)
+            )
+            offer = result.scalar_one_or_none()
+            if offer and offer.location_district:
+                return f"{offer.location_district}, Münster"
+        return "Münster"
+
+    async def _reserve_book_offer(
+        self, offer_id: int, user_id: int, until: datetime
+    ) -> None:
+        result = await self.db.execute(
+            select(BookOffer).where(BookOffer.id == offer_id)
+        )
+        book_offer = result.scalar_one_or_none()
+        if book_offer:
+            book_offer.reserved_until = until
+            book_offer.reserved_by_user_id = user_id
+            book_offer.is_available = False
+            logger.info(
+                f"Reserved book offer {offer_id} for user {user_id} until {until}"
+            )
+
+    async def _unreserve_book_offer(self, offer_id: int) -> None:
+        result = await self.db.execute(
+            select(BookOffer).where(BookOffer.id == offer_id)
+        )
+        book_offer = result.scalar_one_or_none()
+        if book_offer:
+            book_offer.reserved_until = None
+            book_offer.reserved_by_user_id = None
+            book_offer.is_available = True
+            logger.info(f"Unreserved book offer {offer_id}")
+
+    async def _mark_offer_unavailable(self, offer_type: str, offer_id: int) -> None:
+        if offer_type == "book_offer":
+            result = await self.db.execute(
+                select(BookOffer).where(BookOffer.id == offer_id)
+            )
+            offer = result.scalar_one_or_none()
+            if offer:
+                offer.is_available = False
+                offer.reserved_until = None
+                offer.reserved_by_user_id = None
+                logger.info(
+                    f"Marked book offer {offer_id} as unavailable (transaction completed)"
+                )
+
+    async def _transfer_credits(self, transaction: ExchangeTransaction) -> None:
+        if transaction.credit_transferred:
+            return
+
+        result = await self.db.execute(
+            select(User).where(
+                User.id.in_([transaction.requester_id, transaction.provider_id])
+            )
+        )
+        users = {u.id: u for u in result.scalars().all()}
+
+        requester = users[transaction.requester_id]
+        provider = users[transaction.provider_id]
+
+        if requester.book_credits_remaining < transaction.credit_amount:
+            raise HTTPException(status_code=400, detail="Insufficient credits")
+
+        requester.book_credits_remaining -= transaction.credit_amount
+        provider.book_credits_remaining += transaction.credit_amount
+        transaction.credit_transferred = True
+
+        logger.info(
+            f"Credits transferred: {transaction.credit_amount} from {requester.id} to {provider.id}"
+        )
+
+    def _build_metadata(
+        self,
+        data: TransactionCreate,
+        offer_info: OfferInfo,
+        proposed_by_user_id: int | None = None,
+    ) -> dict[str, str | int | bool | list[str] | None]:
+        metadata: dict[str, str | int | bool | list[str] | None] = {
+            "offer_title": offer_info["title"],
+            "offer_condition": offer_info.get("condition"),
+            "initial_message": data.initial_message,
+        }
+        if proposed_by_user_id is not None:
+            metadata["proposed_by_user_id"] = proposed_by_user_id
+        return metadata
+
     async def _build_transaction_data(
         self,
         transaction: ExchangeTransaction,
@@ -719,14 +824,13 @@ class TransactionService:
         )
         users = {u.id: u for u in result.scalars().all()}
 
-        is_provider = current_user_id == transaction.provider_id
-        can_update = transaction.can_be_updated()
         proposed_by = transaction.transaction_metadata.get("proposed_by_user_id")
+        can_update = transaction.can_be_updated()
 
         return TransactionData(
             transaction_id=transaction.id,
-            transaction_type=SchemaTransactionType(transaction.transaction_type),
-            status=SchemaTransactionStatus(transaction.status),
+            transaction_type=ModelTransactionType(transaction.transaction_type),
+            status=ModelTransactionStatus(transaction.status),
             offer=TransactionOfferInfo(
                 title=offer_info["title"],
                 thumbnail_url=offer_info["thumbnail_url"],
@@ -767,61 +871,3 @@ class TransactionService:
             and transaction.status
             in (ModelTransactionStatus.PENDING, ModelTransactionStatus.TIME_CONFIRMED),
         )
-
-    def _build_metadata(
-        self,
-        data: TransactionCreate,
-        offer_info: OfferInfo,
-        proposed_by_user_id: int | None = None,
-    ) -> dict[str, str | int | bool | list[str] | None]:
-        metadata: dict[str, str | int | bool | list[str] | None] = {
-            "offer_title": offer_info["title"],
-            "offer_condition": offer_info.get("condition"),
-            "initial_message": data.initial_message,
-        }
-        if proposed_by_user_id is not None:
-            metadata["proposed_by_user_id"] = proposed_by_user_id
-            print(
-                f"🔍 _build_metadata: Added proposed_by_user_id={proposed_by_user_id}"
-            )
-        print(f"🔍 _build_metadata: Final metadata={metadata}")
-        return metadata
-
-    async def _transfer_credits(self, transaction: ExchangeTransaction) -> None:
-        if transaction.credit_transferred:
-            return
-
-        result = await self.db.execute(
-            select(User).where(
-                User.id.in_([transaction.requester_id, transaction.provider_id])
-            )
-        )
-        users = {u.id: u for u in result.scalars().all()}
-
-        requester = users[transaction.requester_id]
-        provider = users[transaction.provider_id]
-
-        if requester.book_credits_remaining < transaction.credit_amount:
-            raise HTTPException(status_code=400, detail="Insufficient credits")
-
-        requester.book_credits_remaining -= transaction.credit_amount
-        provider.book_credits_remaining += transaction.credit_amount
-        transaction.credit_transferred = True
-
-        logger.info(
-            f"Credits transferred: {transaction.credit_amount} from {requester.id} to {provider.id}"
-        )
-
-    async def _mark_offer_unavailable(self, offer_type: str, offer_id: int) -> None:
-        if offer_type == "book_offer":
-            result = await self.db.execute(
-                select(BookOffer).where(BookOffer.id == offer_id)
-            )
-            offer = result.scalar_one_or_none()
-            if offer:
-                offer.is_available = False
-                offer.reserved_until = None
-                offer.reserved_by_user_id = None
-                logger.info(
-                    f"Marked book offer {offer_id} as unavailable (transaction completed)"
-                )

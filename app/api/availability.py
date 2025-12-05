@@ -138,6 +138,8 @@ async def get_user_public_availability(
             start_time=slot.start_time,
             end_time=slot.end_time,
             specific_date=slot.specific_date,
+            specific_start=slot.specific_start,
+            specific_end=slot.specific_end,
             display_label=slot.title if slot.slot_type == "blocked" else None,
         )
         for slot in slots

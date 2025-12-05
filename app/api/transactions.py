@@ -41,6 +41,15 @@ async def create_transaction(
     )
 
 
+@router.get("/available-slots", response_model=dict[str, int])
+async def get_available_request_slots(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    service = TransactionService(db)
+    return await service.get_user_available_request_slots(current_user.id)
+
+
 @router.post("/{transaction_id}/propose-time", response_model=TransactionData)
 async def propose_time(
     transaction_id: int,

@@ -119,6 +119,8 @@ class MessageService:
 
         moderation_result = self.moderation_service.check_content(data.content)
 
+        now = datetime.now(timezone.utc)
+
         message = Message(
             conversation_id=conversation_id,
             sender_id=sender_id,
@@ -128,6 +130,7 @@ class MessageService:
             moderation_status="pending"
             if moderation_result.get("requires_review", False)
             else "approved",
+            last_activity_at=now,
         )
 
         self.db.add(message)
@@ -366,7 +369,7 @@ class MessageService:
         if before_message_id:
             query = query.where(Message.id < before_message_id)
 
-        query = query.order_by(desc(Message.created_at)).limit(size)
+        query = query.order_by(desc(Message.last_activity_at)).limit(size)
 
         result = await self.db.execute(query)
         messages = result.scalars().all()
@@ -643,6 +646,12 @@ class MessageService:
                 is_read=True,
             )
 
+        transaction_data = message.transaction_data
+        if message.message_type == "transaction" and transaction_data:
+            transaction_data = await self._recompute_transaction_permissions(
+                transaction_data, current_user_id
+            )
+
         return MessageResponse(
             id=message.id,
             conversation_id=message.conversation_id,
@@ -656,7 +665,7 @@ class MessageService:
             reply_to_id=message.reply_to_id,
             reply_to=reply_to,
             is_read=is_read,
-            transaction_data=message.transaction_data,
+            transaction_data=transaction_data,
         )
 
     async def _format_conversation(
@@ -679,7 +688,7 @@ class MessageService:
 
         last_message = None
         if hasattr(conversation, "messages") and conversation.messages:
-            latest_msg = max(conversation.messages, key=lambda m: m.created_at)
+            latest_msg = max(conversation.messages, key=lambda m: m.last_activity_at)
             last_message = await self._format_message(latest_msg, current_user_id)
 
         unread_count = await self._get_unread_count_for_conversation(
@@ -715,7 +724,7 @@ class MessageService:
 
         recent_messages = sorted(
             [msg for msg in conversation.messages if not msg.is_deleted],
-            key=lambda m: m.created_at,
+            key=lambda m: m.last_activity_at,
             reverse=True,
         )[:50]
 
@@ -896,3 +905,64 @@ class MessageService:
             )
 
         return True
+
+    async def _recompute_transaction_permissions(
+        self, transaction_data: dict[str, str | int | bool | None], current_user_id: int
+    ) -> dict[str, str | int | bool | None]:
+        transaction_id = transaction_data.get("transaction_id")
+        if not transaction_id or not isinstance(transaction_id, int):
+            return transaction_data
+
+        from app.models.exchange_transaction import ExchangeTransaction
+        from app.models.exchange_transaction import (
+            TransactionStatus as ModelTransactionStatus,
+        )
+
+        result = await self.db.execute(
+            select(ExchangeTransaction).where(ExchangeTransaction.id == transaction_id)
+        )
+        transaction = result.scalar_one_or_none()
+
+        if not transaction:
+            return transaction_data
+
+        proposed_by = transaction.transaction_metadata.get("proposed_by_user_id")
+        is_provider = current_user_id == transaction.provider_id
+        can_update = transaction.can_be_updated()
+
+        can_propose_time = (
+            can_update and transaction.status == ModelTransactionStatus.PENDING
+        )
+
+        can_confirm_time = (
+            can_update
+            and transaction.status == ModelTransactionStatus.PENDING
+            and len(transaction.proposed_times) > 0
+            and proposed_by is not None
+            and proposed_by != current_user_id
+        )
+
+        can_edit_address = (
+            is_provider
+            and transaction.status == ModelTransactionStatus.PENDING
+            and can_update
+        )
+
+        updated_data: dict[str, str | int | bool | None] = dict(transaction_data)
+        updated_data.update(
+            {
+                "can_propose_time": can_propose_time,
+                "can_confirm_time": can_confirm_time,
+                "can_edit_address": can_edit_address,
+                "can_confirm_handover": can_update
+                and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
+                "can_cancel": can_update
+                and transaction.status
+                in (
+                    ModelTransactionStatus.PENDING,
+                    ModelTransactionStatus.TIME_CONFIRMED,
+                ),
+            }
+        )
+
+        return updated_data

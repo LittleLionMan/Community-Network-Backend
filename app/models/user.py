@@ -122,24 +122,3 @@ class User(Base):
     __table_args__ = (
         Index("idx_user_location_coords", "location_lat", "location_lon"),
     )
-
-    def reset_credits_if_needed(self) -> bool:
-        now = datetime.now(timezone.utc)
-
-        if self.book_credits_remaining > 0:
-            return False
-
-        if not self.book_credits_last_reset:
-            self.book_credits_remaining = 1
-            self.book_credits_last_reset = now
-            return True
-
-        last_reset_month = self.book_credits_last_reset.replace(tzinfo=timezone.utc)
-        next_reset_date = last_reset_month + relativedelta(months=1)
-
-        if now >= next_reset_date:
-            self.book_credits_remaining = 1
-            self.book_credits_last_reset = now
-            return True
-
-        return False

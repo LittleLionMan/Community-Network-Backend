@@ -78,10 +78,13 @@ async def get_my_offers(
     elif status_filter == "reserved":
         query = query.where(
             BookOffer.reserved_by_user_id.isnot(None),
-            BookOffer.is_available,
+            BookOffer.is_available == False,
         )
     elif status_filter == "completed":
-        query = query.where(BookOffer.is_available == False)
+        query = query.where(
+            BookOffer.is_available == False,
+            BookOffer.reserved_by_user_id.is_(None),
+        )
 
     query = query.order_by(BookOffer.created_at.desc())
 

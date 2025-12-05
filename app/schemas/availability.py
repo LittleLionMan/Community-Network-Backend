@@ -83,4 +83,6 @@ class AvailabilitySlotPublic(BaseModel):
     start_time: time | None
     end_time: time | None
     specific_date: date | None
+    specific_start: datetime | None
+    specific_end: datetime | None
     display_label: str | None

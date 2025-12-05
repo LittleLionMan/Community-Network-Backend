@@ -90,7 +90,6 @@ class AvailabilityService:
             and_(
                 UserAvailability.user_id == user_id,
                 UserAvailability.is_active,
-                UserAvailability.slot_type == "available",
             )
         )
 
