@@ -5,6 +5,7 @@ from typing import Any, cast
 from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from ..utils.datetime_utils import serialize_datetime, serialize_datetime_list
 from .base import Base
 from .types import UTCDateTime
 
@@ -110,12 +111,7 @@ class ExchangeTransaction(Base):
         )
 
     def to_flat_transaction_data(self) -> dict[str, str | int | bool | None]:
-        proposed_times_str = ",".join(
-            [
-                t.isoformat() if isinstance(t, datetime) else t
-                for t in self.proposed_times
-            ]
-        )
+        proposed_times_str = ",".join(serialize_datetime_list(self.proposed_times))
 
         return {
             "transaction_id": self.id,
@@ -126,25 +122,21 @@ class ExchangeTransaction(Base):
             "requester_id": self.requester_id,
             "provider_id": self.provider_id,
             "proposed_times": proposed_times_str,
-            "confirmed_time": self.confirmed_time.isoformat()
-            if self.confirmed_time
-            else None,
+            "confirmed_time": serialize_datetime(self.confirmed_time),
             "exact_address": self.exact_address
             if self.status
             in (TransactionStatus.TIME_CONFIRMED, TransactionStatus.COMPLETED)
             else None,
             "requester_confirmed": self.requester_confirmed_handover,
             "provider_confirmed": self.provider_confirmed_handover,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": (self.time_confirmed_at or self.created_at).isoformat(),
-            "expires_at": self.expires_at.isoformat(),
+            "created_at": serialize_datetime(self.created_at),
+            "updated_at": serialize_datetime(self.time_confirmed_at or self.created_at),
+            "expires_at": serialize_datetime(self.expires_at),
             "offer_title": str(self.transaction_metadata.get("offer_title", "")),
         }
 
     def to_transaction_data(self) -> dict[str, JSONValue]:
-        proposed_times_iso = [
-            t.isoformat() if isinstance(t, datetime) else t for t in self.proposed_times
-        ]
+        proposed_times_iso = serialize_datetime_list(self.proposed_times)
 
         return {
             "transaction_id": self.id,
@@ -155,17 +147,15 @@ class ExchangeTransaction(Base):
             "requester_id": self.requester_id,
             "provider_id": self.provider_id,
             "proposed_times": cast(list[JSONValue], proposed_times_iso),
-            "confirmed_time": self.confirmed_time.isoformat()
-            if self.confirmed_time
-            else None,
+            "confirmed_time": serialize_datetime(self.confirmed_time),
             "exact_address": self.exact_address
             if self.status
             in (TransactionStatus.TIME_CONFIRMED, TransactionStatus.COMPLETED)
             else None,
             "requester_confirmed": self.requester_confirmed_handover,
             "provider_confirmed": self.provider_confirmed_handover,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": (self.time_confirmed_at or self.created_at).isoformat(),
-            "expires_at": self.expires_at.isoformat(),
+            "created_at": serialize_datetime(self.created_at),
+            "updated_at": serialize_datetime(self.time_confirmed_at or self.created_at),
+            "expires_at": serialize_datetime(self.expires_at),
             "metadata": self.transaction_metadata,
         }

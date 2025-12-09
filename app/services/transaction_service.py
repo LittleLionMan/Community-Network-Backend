@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TypedDict
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,7 +17,12 @@ from app.models.exchange_transaction import (
 from app.models.exchange_transaction import (
     TransactionType as ModelTransactionType,
 )
-from app.models.message import Conversation, ConversationParticipant, Message
+from app.models.message import (
+    Conversation,
+    ConversationParticipant,
+    Message,
+    MessageReadReceipt,
+)
 from app.models.user import User
 from app.schemas.transaction import (
     ConfirmTimeRequest,
@@ -30,6 +35,7 @@ from app.schemas.transaction import (
 )
 from app.services.availability_service import AvailabilityService
 from app.services.websocket_service import websocket_manager
+from app.utils.datetime_utils import serialize_datetime, serialize_datetime_list
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +80,7 @@ class TransactionService:
         current_user_id: int,
     ) -> dict[str, str | int | bool | None]:
         proposed_times_str = ",".join(
-            [
-                t.isoformat() if isinstance(t, datetime) else t
-                for t in transaction.proposed_times
-            ]
+            serialize_datetime_list(transaction.proposed_times)
         )
 
         proposed_by = transaction.transaction_metadata.get("proposed_by_user_id")
@@ -123,19 +126,15 @@ class TransactionService:
             "provider_display_name": provider_name,
             "provider_profile_image_url": provider_avatar,
             "proposed_times": proposed_times_str,
-            "confirmed_time": transaction.confirmed_time.isoformat()
-            if transaction.confirmed_time
-            else None,
+            "confirmed_time": serialize_datetime(transaction.confirmed_time),
             "exact_address": transaction.exact_address,
             "requester_confirmed": transaction.requester_confirmed_handover,
             "provider_confirmed": transaction.provider_confirmed_handover,
-            "created_at": transaction.created_at.isoformat(),
-            "updated_at": (
+            "created_at": serialize_datetime(transaction.created_at),
+            "updated_at": serialize_datetime(
                 transaction.time_confirmed_at or transaction.created_at
-            ).isoformat(),
-            "expires_at": transaction.expires_at.isoformat()
-            if transaction.expires_at
-            else None,
+            ),
+            "expires_at": serialize_datetime(transaction.expires_at),
             "is_expired": transaction.is_expired(),
             "can_propose_time": can_propose_time,
             "can_confirm_time": can_confirm_time,
@@ -165,7 +164,7 @@ class TransactionService:
             transaction.offer_type, transaction.offer_id
         )
 
-        message.transaction_data = self._serialize_transaction_for_message(
+        requester_data = self._serialize_transaction_for_message(
             transaction=transaction,
             requester_name=users[transaction.requester_id].display_name,
             provider_name=users[transaction.provider_id].display_name,
@@ -174,21 +173,125 @@ class TransactionService:
             offer_title=offer_info["title"],
             offer_thumbnail=offer_info["thumbnail_url"],
             offer_condition=offer_info["condition"],
-            current_user_id=user_id,
+            current_user_id=transaction.requester_id,
         )
 
-        message.last_activity_at = datetime.now(timezone.utc)
+        provider_data = self._serialize_transaction_for_message(
+            transaction=transaction,
+            requester_name=users[transaction.requester_id].display_name,
+            provider_name=users[transaction.provider_id].display_name,
+            requester_avatar=users[transaction.requester_id].profile_image_url,
+            provider_avatar=users[transaction.provider_id].profile_image_url,
+            offer_title=offer_info["title"],
+            offer_thumbnail=offer_info["thumbnail_url"],
+            offer_condition=offer_info["condition"],
+            current_user_id=transaction.provider_id,
+        )
 
-        await websocket_manager.send_to_conversation(
-            message.conversation_id,
+        message.transaction_data = requester_data
+
+        now = datetime.now(timezone.utc)
+        message.last_activity_at = now
+
+        conversation = await self.db.get(Conversation, message.conversation_id)
+        conversation_preview = self._get_transaction_preview(transaction)
+
+        if conversation:
+            conversation.last_message_at = now
+            conversation.updated_at = now
+            conversation.last_message_preview = conversation_preview
+
+        participants_query = select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == message.conversation_id,
+        )
+        participants_result = await self.db.execute(participants_query)
+        all_participants = participants_result.scalars().all()
+
+        await websocket_manager.send_to_user(
+            transaction.requester_id,
             {
                 "type": "transaction_updated",
                 "conversation_id": message.conversation_id,
                 "message_id": message.id,
                 "transaction_id": transaction.id,
-                "transaction_data": message.transaction_data,
+                "transaction_data": requester_data,
             },
         )
+
+        await websocket_manager.send_to_user(
+            transaction.provider_id,
+            {
+                "type": "transaction_updated",
+                "conversation_id": message.conversation_id,
+                "message_id": message.id,
+                "transaction_id": transaction.id,
+                "transaction_data": provider_data,
+            },
+        )
+
+        for participant in all_participants:
+            if participant.user_id == user_id:
+                continue
+
+            delete_receipt = delete(MessageReadReceipt).where(
+                and_(
+                    MessageReadReceipt.message_id == message.id,
+                    MessageReadReceipt.user_id == participant.user_id,
+                )
+            )
+            _ = await self.db.execute(delete_receipt)
+
+        await self.db.flush()
+
+        logger.info(
+            f"DEBUG Transaction Update: "
+            f"user_id={user_id}, "
+            f"message_id={message.id}, "
+            f"sender_id={message.sender_id}, "
+            f"conversation={message.conversation_id}"
+        )
+
+        for participant in all_participants:
+            if participant.user_id == user_id:
+                continue
+
+            unread_query = select(func.count(Message.id)).where(
+                and_(
+                    Message.conversation_id == message.conversation_id,
+                    Message.is_deleted.is_(False),
+                    Message.id.not_in(
+                        select(MessageReadReceipt.message_id).where(
+                            MessageReadReceipt.user_id == participant.user_id
+                        )
+                    ),
+                    or_(
+                        Message.message_type == "transaction",
+                        Message.sender_id != participant.user_id,
+                    ),
+                )
+            )
+            unread_result = await self.db.execute(unread_query)
+            unread_count = unread_result.scalar() or 0
+
+            print(
+                f"  → Participant {participant.user_id}: "
+                f"sender_id={message.sender_id}, "
+                f"participant_id={participant.user_id}, "
+                f"unread={unread_count}"
+            )
+
+            await websocket_manager.send_to_user(
+                participant.user_id,
+                {
+                    "type": "conversation_updated",
+                    "conversation_id": message.conversation_id,
+                    "unread_count": unread_count,
+                    "last_message_preview": conversation.last_message_preview
+                    if conversation
+                    else None,
+                    "last_message_at": now.isoformat() + "Z",
+                },
+            )
 
     async def create_transaction(
         self,
@@ -312,6 +415,65 @@ class TransactionService:
         await self.db.commit()
         await self.db.refresh(transaction_message)
 
+        await websocket_manager.send_to_conversation(
+            conversation_id,
+            {
+                "type": "new_message",
+                "conversation_id": conversation_id,
+                "message": {
+                    "id": transaction_message.id,
+                    "conversation_id": conversation_id,
+                    "sender": {
+                        "id": requester_id,
+                        "display_name": users[requester_id].display_name,
+                        "profile_image_url": users[requester_id].profile_image_url,
+                    },
+                    "content": data.initial_message,
+                    "message_type": "transaction",
+                    "transaction_data": transaction_message.transaction_data,
+                    "created_at": serialize_datetime(transaction_message.created_at),
+                    "is_read": False,
+                    "is_edited": False,
+                    "is_deleted": False,
+                },
+            },
+        )
+
+        conversation = await self.db.get(Conversation, conversation_id)
+        if conversation:
+            conversation.last_message_at = now
+            conversation.updated_at = now
+            conversation.last_message_preview = self._get_transaction_preview(
+                transaction
+            )
+            await self.db.commit()
+
+            provider_unread_query = select(func.count(Message.id)).where(
+                and_(
+                    Message.conversation_id == conversation_id,
+                    Message.sender_id != provider_id,
+                    Message.is_deleted.is_(False),
+                    Message.id.not_in(
+                        select(MessageReadReceipt.message_id).where(
+                            MessageReadReceipt.user_id == provider_id
+                        )
+                    ),
+                )
+            )
+            provider_unread_result = await self.db.execute(provider_unread_query)
+            provider_unread_count = provider_unread_result.scalar() or 0
+
+            await websocket_manager.send_to_user(
+                provider_id,
+                {
+                    "type": "conversation_updated",
+                    "conversation_id": conversation_id,
+                    "unread_count": provider_unread_count,
+                    "last_message_preview": conversation.last_message_preview,
+                    "last_message_at": now.isoformat() + "Z",
+                },
+            )
+
         return await self._build_transaction_data(transaction, requester_id)
 
     async def propose_time(
@@ -336,21 +498,24 @@ class TransactionService:
         if not transaction.can_be_updated():
             raise HTTPException(status_code=400, detail="Transaction cannot be updated")
 
-        proposed_iso = data.proposed_time.isoformat()
+        proposed_times_iso = [t.isoformat() for t in data.proposed_times]
         is_provider = user_id == transaction.provider_id
 
         if is_provider:
-            provider_available = await AvailabilityService.check_time_available(
-                db=self.db,
-                user_id=transaction.provider_id,
-                check_start=data.proposed_time,
-                check_end=data.proposed_time + timedelta(hours=1),
-            )
+            for proposed_time in data.proposed_times:
+                provider_available = await AvailabilityService.check_time_available(
+                    db=self.db,
+                    user_id=transaction.provider_id,
+                    check_start=proposed_time,
+                    check_end=proposed_time + timedelta(hours=1),
+                )
 
-            if not provider_available:
-                logger.warning(f"Provider {user_id} proposed time when not available")
+                if not provider_available:
+                    logger.warning(
+                        f"Provider proposed unavailable time: {proposed_time}"
+                    )
 
-        transaction.proposed_times = [proposed_iso]
+        transaction.proposed_times = proposed_times_iso
 
         new_metadata = dict(transaction.transaction_metadata)
         new_metadata["proposed_by_user_id"] = user_id
@@ -418,6 +583,15 @@ class TransactionService:
             start_time=confirmed_dt,
             end_time=confirmed_dt + timedelta(hours=1),
             title=f"Buchübergabe: {transaction.transaction_metadata.get('offer_title', 'Unbekannt')}",
+        )
+
+        _ = await AvailabilityService.block_time_for_transaction(
+            db=self.db,
+            transaction_id=transaction.id,
+            user_id=transaction.requester_id,
+            start_time=confirmed_dt,
+            end_time=confirmed_dt + timedelta(hours=1),
+            title=f"Buchabholung: {transaction.transaction_metadata.get('offer_title', 'Unbekannt')}",
         )
 
         await self._update_message_transaction_data(transaction, user_id)
@@ -617,6 +791,25 @@ class TransactionService:
             "active_transactions": active_count,
             "available_slots": available_slots,
         }
+
+    def _get_transaction_preview(self, transaction: ExchangeTransaction) -> str:
+        status_previews = {
+            "pending": "📚 Buchausleihe angefragt",
+            "time_confirmed": "📅 Termin bestätigt",
+            "completed": "✅ Übergabe abgeschlossen",
+            "cancelled": "🚫 Storniert",
+            "expired": "⏰ Abgelaufen",
+        }
+
+        status_text = status_previews.get(
+            transaction.status.value
+            if hasattr(transaction.status, "value")
+            else transaction.status,
+            "Transaction-Update",
+        )
+
+        offer_title = transaction.transaction_metadata.get("offer_title", "Unbekannt")
+        return f"{status_text}: {offer_title[:50]}"
 
     async def _get_transaction_or_404(self, transaction_id: int) -> ExchangeTransaction:
         result = await self.db.execute(
@@ -846,13 +1039,8 @@ class TransactionService:
                 display_name=users[transaction.provider_id].display_name,
                 avatar_url=users[transaction.provider_id].profile_image_url,
             ),
-            proposed_times=[
-                t.isoformat() if isinstance(t, datetime) else t
-                for t in transaction.proposed_times
-            ],
-            confirmed_time=transaction.confirmed_time.isoformat()
-            if transaction.confirmed_time
-            else None,
+            proposed_times=serialize_datetime_list(transaction.proposed_times),
+            confirmed_time=serialize_datetime(transaction.confirmed_time),
             exact_address=transaction.exact_address,
             requester_confirmed=transaction.requester_confirmed_handover,
             provider_confirmed=transaction.provider_confirmed_handover,

@@ -64,7 +64,7 @@ class UserPublic(BaseModel):
     bio: str | None = None
     location: str | None = None
     location_district: str | None = None
-    book_credits_remaining: int
+    book_credits_remaining: int | None = None
     created_at: datetime | None = None
     profile_image_url: str | None = None
 

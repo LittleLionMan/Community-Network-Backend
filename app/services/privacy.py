@@ -1,16 +1,16 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from ..models.user import User
-from ..schemas.user import UserPublic, UserPrivate
 from datetime import datetime
 
-class PrivacyService:
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.user import User
+from ..schemas.user import UserPrivate, UserPublic
+
+
+class PrivacyService:
     @staticmethod
     async def get_user_for_viewer(
-        db: AsyncSession,
-        user_id: int,
-        viewer_id: int | None = None
+        db: AsyncSession, user_id: int, viewer_id: int | None = None
     ) -> UserPublic | UserPrivate | None:
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -28,7 +28,7 @@ class PrivacyService:
         user_data: dict[str, int | str | datetime | None] = {
             "id": user.id,
             "display_name": user.display_name,
-            "profile_image_url": user.profile_image_url
+            "profile_image_url": user.profile_image_url,
         }
 
         if not user.first_name_private and user.first_name:
@@ -45,11 +45,15 @@ class PrivacyService:
 
         if not user.created_at_private:
             user_data["created_at"] = user.created_at
+        if 1 == 0:  # privacy feature erstellen
+            user_data["book_credits_remaining"] = user.book_credits_remaining
 
         return UserPublic.model_validate(user_data)
 
     @staticmethod
-    async def check_field_visibility(user: User, field: str, viewer_id: int | None = None) -> bool:
+    async def check_field_visibility(
+        user: User, field: str, viewer_id: int | None = None
+    ) -> bool:
         if viewer_id == user.id:
             return True
 

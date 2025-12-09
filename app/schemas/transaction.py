@@ -39,20 +39,30 @@ class TransactionCreate(BaseModel):
 
 
 class ProposeTimeRequest(BaseModel):
-    proposed_time: datetime
+    proposed_times: list[datetime] = Field(default_factory=list, max_length=5)
 
-    @field_validator("proposed_time")
+    @field_validator("proposed_times")
     @classmethod
-    def validate_proposed_time(cls, v: datetime) -> datetime:
+    def validate_proposed_times(cls, v: list[datetime]) -> list[datetime]:
+        if not v:
+            return v
+
         now = datetime.now(timezone.utc)
 
-        if v.tzinfo is None:
-            v = v.replace(tzinfo=timezone.utc)
+        future_times = []
+        for t in v:
+            if t.tzinfo is None:
+                t_aware = t.replace(tzinfo=timezone.utc)
+            else:
+                t_aware = t
 
-        if v <= now:
-            raise ValueError("Proposed time must be in the future")
+            if t_aware > now:
+                future_times.append(t_aware)
 
-        return v
+        if not future_times and v:
+            raise ValueError("All proposed times must be in the future")
+
+        return future_times
 
 
 class UpdateAddressRequest(BaseModel):
