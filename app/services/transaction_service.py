@@ -34,6 +34,7 @@ from app.schemas.transaction import (
     TransactionParticipantInfo,
 )
 from app.services.availability_service import AvailabilityService
+from app.services.message_service import MessageService
 from app.services.websocket_service import websocket_manager
 from app.utils.datetime_utils import serialize_datetime, serialize_datetime_list
 
@@ -243,41 +244,22 @@ class TransactionService:
 
         await self.db.flush()
 
-        logger.info(
-            f"DEBUG Transaction Update: "
-            f"user_id={user_id}, "
-            f"message_id={message.id}, "
-            f"sender_id={message.sender_id}, "
-            f"conversation={message.conversation_id}"
-        )
+        msg_service = MessageService(self.db)
 
         for participant in all_participants:
-            if participant.user_id == user_id:
-                continue
+            user_unread = await msg_service.get_unread_count(participant.user_id)
 
-            unread_query = select(func.count(Message.id)).where(
-                and_(
-                    Message.conversation_id == message.conversation_id,
-                    Message.is_deleted.is_(False),
-                    Message.id.not_in(
-                        select(MessageReadReceipt.message_id).where(
-                            MessageReadReceipt.user_id == participant.user_id
-                        )
-                    ),
-                    or_(
-                        Message.message_type == "transaction",
-                        Message.sender_id != participant.user_id,
-                    ),
-                )
-            )
-            unread_result = await self.db.execute(unread_query)
-            unread_count = unread_result.scalar() or 0
+            conv_unread = 0
+            for conv in user_unread.conversations:
+                if conv["conversation_id"] == message.conversation_id:
+                    conv_unread = conv["unread_count"]
+                    break
 
             print(
-                f"  → Participant {participant.user_id}: "
-                f"sender_id={message.sender_id}, "
-                f"participant_id={participant.user_id}, "
-                f"unread={unread_count}"
+                f"🔍 Participant {participant.user_id}: "
+                f"is_updater={participant.user_id == user_id}, "
+                f"conversation_unread={conv_unread}, "
+                f"total_unread={user_unread.total_unread}"
             )
 
             await websocket_manager.send_to_user(
@@ -285,11 +267,28 @@ class TransactionService:
                 {
                     "type": "conversation_updated",
                     "conversation_id": message.conversation_id,
-                    "unread_count": unread_count,
+                    "unread_count": conv_unread,
                     "last_message_preview": conversation.last_message_preview
                     if conversation
                     else None,
-                    "last_message_at": now.isoformat() + "Z",
+                    "last_message_at": now.isoformat(),
+                },
+            )
+
+            await websocket_manager.send_to_user(
+                participant.user_id,
+                {
+                    "type": "unread_count_update",
+                    "data": user_unread.model_dump(),
+                },
+            )
+
+            user_unread = await msg_service.get_unread_count(participant.user_id)
+            await websocket_manager.send_to_user(
+                participant.user_id,
+                {
+                    "type": "unread_count_update",
+                    "data": user_unread.model_dump(),
                 },
             )
 
@@ -470,7 +469,7 @@ class TransactionService:
                     "conversation_id": conversation_id,
                     "unread_count": provider_unread_count,
                     "last_message_preview": conversation.last_message_preview,
-                    "last_message_at": now.isoformat() + "Z",
+                    "last_message_at": now.isoformat(),
                 },
             )
 

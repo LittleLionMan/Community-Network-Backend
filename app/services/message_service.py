@@ -406,8 +406,11 @@ class MessageService:
         query = select(Message.id).where(
             and_(
                 Message.conversation_id == conversation_id,
-                Message.sender_id != user_id,
                 Message.is_deleted.is_(False),
+                or_(
+                    Message.message_type == "transaction",
+                    Message.sender_id != user_id,
+                ),
             )
         )
 
@@ -461,12 +464,15 @@ class MessageService:
             unread_query = select(func.count(Message.id)).where(
                 and_(
                     Message.conversation_id == conv_id,
-                    Message.sender_id != user_id,
                     Message.is_deleted.is_(False),
                     Message.id.not_in(
                         select(MessageReadReceipt.message_id).where(
                             MessageReadReceipt.user_id == user_id
                         )
+                    ),
+                    or_(
+                        Message.message_type == "transaction",
+                        Message.sender_id != user_id,
                     ),
                 )
             )
