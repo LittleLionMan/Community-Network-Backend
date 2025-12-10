@@ -620,7 +620,16 @@ class MessageService:
         self, message: Message, current_user_id: int
     ) -> MessageResponse:
         is_read = False
-        if message.sender_id == current_user_id:
+        if message.message_type == "transaction":
+            read_receipt_query = select(MessageReadReceipt).where(
+                and_(
+                    MessageReadReceipt.message_id == message.id,
+                    MessageReadReceipt.user_id == current_user_id,
+                )
+            )
+            read_result = await self.db.execute(read_receipt_query)
+            is_read = read_result.scalar_one_or_none() is not None
+        elif message.sender_id == current_user_id:
             is_read = True
         else:
             read_receipt_query = select(MessageReadReceipt).where(

@@ -255,13 +255,6 @@ class TransactionService:
                     conv_unread = conv["unread_count"]
                     break
 
-            print(
-                f"🔍 Participant {participant.user_id}: "
-                f"is_updater={participant.user_id == user_id}, "
-                f"conversation_unread={conv_unread}, "
-                f"total_unread={user_unread.total_unread}"
-            )
-
             await websocket_manager.send_to_user(
                 participant.user_id,
                 {
@@ -410,6 +403,11 @@ class TransactionService:
             offer_condition=offer_info["condition"],
             current_user_id=requester_id,
         )
+
+        requester_receipt = MessageReadReceipt(
+            message_id=transaction_message.id, user_id=requester_id
+        )
+        self.db.add(requester_receipt)
 
         await self.db.commit()
         await self.db.refresh(transaction_message)
