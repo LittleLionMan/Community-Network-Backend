@@ -170,6 +170,25 @@ class MessageService:
             },
         )
 
+        try:
+            participants_query = select(ConversationParticipant.user_id).where(
+                and_(
+                    ConversationParticipant.conversation_id == conversation_id,
+                    ConversationParticipant.user_id != sender_id,
+                )
+            )
+            result = await self.db.execute(participants_query)
+            other_participants = result.scalars().all()
+
+            for participant_id in other_participants:
+                unread = await self.get_unread_count(participant_id)
+                await websocket_manager.send_to_user(
+                    participant_id,
+                    {"type": "unread_count_update", "data": unread.model_dump()},
+                )
+        except Exception as e:
+            print(f"Failed to send unread updates: {e}")
+
         return message_response
 
     async def _send_email_notifications(

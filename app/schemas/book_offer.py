@@ -72,6 +72,11 @@ class BookOfferCreate(BookOfferBase):
     custom_location: str | None = Field(
         None, max_length=200, description="Optional: Abweichender Standort"
     )
+    location_district: str | None = Field(
+        None,
+        max_length=200,
+        description="Stadtteil (wird automatisch vom Frontend validiert)",
+    )
 
     @field_validator("isbn")
     @classmethod
@@ -92,6 +97,11 @@ class BookOfferUpdate(BaseModel):
     notes: str | None = Field(None, max_length=1000)
     user_comment: str | None = Field(None, max_length=5000)
     custom_location: str | None = Field(None, max_length=200)
+    location_district: str | None = Field(
+        None,
+        max_length=200,
+        description="Stadtteil (wird automatisch vom Frontend validiert)",
+    )
     is_available: bool | None = None
 
 

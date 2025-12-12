@@ -1,9 +1,9 @@
 import logging
-from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.book import Book
 from app.models.book_offer import BookOffer
@@ -29,9 +29,9 @@ class BookService:
         self.db = db
 
     async def _get_all_user_comments(self, book_id: int) -> list[BookUserComment]:
-        """Lädt alle User-Kommentare zu einem Buch (von allen Offers)"""
         query = (
             select(BookOffer)
+            .options(selectinload(BookOffer.owner))
             .where(
                 BookOffer.book_id == book_id,
                 BookOffer.user_comment.isnot(None),
@@ -297,6 +297,7 @@ class BookService:
     async def get_my_offers(self, user_id: int) -> list[BookOfferRead]:
         query = (
             select(BookOffer)
+            .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
             .where(BookOffer.owner_id == user_id)
             .order_by(BookOffer.created_at.desc())
         )
@@ -316,7 +317,11 @@ class BookService:
     async def update_offer(
         self, offer_id: int, user_id: int, data: BookOfferUpdate
     ) -> BookOfferRead:
-        query = select(BookOffer).where(BookOffer.id == offer_id)
+        query = (
+            select(BookOffer)
+            .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
+            .where(BookOffer.id == offer_id)
+        )
         result = await self.db.execute(query)
         offer = result.scalar_one_or_none()
 
@@ -352,7 +357,28 @@ class BookService:
                 setattr(offer, key, value)
 
         await self.db.commit()
-        await self.db.refresh(offer, ["book", "owner"])
+        await self.db.refresh(
+            offer,
+            [
+                "id",
+                "book_id",
+                "owner_id",
+                "condition",
+                "notes",
+                "user_comment",
+                "location_lat",
+                "location_lon",
+                "location_district",
+                "is_available",
+                "created_at",
+                "updated_at",
+                "reserved_until",
+                "reserved_by_user_id",
+                "custom_cover_image_url",
+                "book",
+                "owner",
+            ],
+        )
 
         all_comments = await self._get_all_user_comments(offer.book_id)
 

@@ -71,6 +71,7 @@ class ExchangeTransaction(Base):
     credit_transferred: Mapped[bool] = mapped_column(Boolean, default=False)
 
     exact_address: Mapped[str | None] = mapped_column(String(500))
+    location_district: Mapped[str | None] = mapped_column(String(200))
 
     transaction_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSON, nullable=False
@@ -113,6 +114,11 @@ class ExchangeTransaction(Base):
     def to_flat_transaction_data(self) -> dict[str, str | int | bool | None]:
         proposed_times_str = ",".join(serialize_datetime_list(self.proposed_times))
 
+        show_exact_address = self.status in (
+            TransactionStatus.TIME_CONFIRMED,
+            TransactionStatus.COMPLETED,
+        )
+
         return {
             "transaction_id": self.id,
             "transaction_type": self.transaction_type.value,
@@ -123,10 +129,8 @@ class ExchangeTransaction(Base):
             "provider_id": self.provider_id,
             "proposed_times": proposed_times_str,
             "confirmed_time": serialize_datetime(self.confirmed_time),
-            "exact_address": self.exact_address
-            if self.status
-            in (TransactionStatus.TIME_CONFIRMED, TransactionStatus.COMPLETED)
-            else None,
+            "exact_address": self.exact_address if show_exact_address else None,
+            "location_district": self.location_district,
             "requester_confirmed": self.requester_confirmed_handover,
             "provider_confirmed": self.provider_confirmed_handover,
             "created_at": serialize_datetime(self.created_at),
@@ -138,6 +142,11 @@ class ExchangeTransaction(Base):
     def to_transaction_data(self) -> dict[str, JSONValue]:
         proposed_times_iso = serialize_datetime_list(self.proposed_times)
 
+        show_exact_address = self.status in (
+            TransactionStatus.TIME_CONFIRMED,
+            TransactionStatus.COMPLETED,
+        )
+
         return {
             "transaction_id": self.id,
             "transaction_type": self.transaction_type.value,
@@ -148,10 +157,8 @@ class ExchangeTransaction(Base):
             "provider_id": self.provider_id,
             "proposed_times": cast(list[JSONValue], proposed_times_iso),
             "confirmed_time": serialize_datetime(self.confirmed_time),
-            "exact_address": self.exact_address
-            if self.status
-            in (TransactionStatus.TIME_CONFIRMED, TransactionStatus.COMPLETED)
-            else None,
+            "exact_address": self.exact_address if show_exact_address else None,
+            "location_district": self.location_district,
             "requester_confirmed": self.requester_confirmed_handover,
             "provider_confirmed": self.provider_confirmed_handover,
             "created_at": serialize_datetime(self.created_at),

@@ -67,6 +67,7 @@ class ProposeTimeRequest(BaseModel):
 
 class UpdateAddressRequest(BaseModel):
     exact_address: str = Field(..., min_length=1, max_length=500)
+    location_district: str | None = Field(None, max_length=200)
 
 
 class ConfirmTimeRequest(BaseModel):
@@ -127,12 +128,14 @@ class TransactionData(BaseModel):
     proposed_times: list[str]
     confirmed_time: str | None = None
     exact_address: str | None = None
+    location_district: str | None = None
     requester_confirmed: bool
     provider_confirmed: bool
     created_at: datetime
     expires_at: datetime | None = None
     can_propose_time: bool
     can_confirm_time: bool
+    can_edit_address: bool
     can_confirm_handover: bool
     can_cancel: bool
 

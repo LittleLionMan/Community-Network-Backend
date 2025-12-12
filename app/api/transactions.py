@@ -84,6 +84,7 @@ async def update_transaction_address(
         transaction_id=transaction_id,
         user_id=current_user.id,
         new_address=data.exact_address,
+        location_district=data.location_district,
     )
 
 

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TypedDict
 
 from fastapi import HTTPException
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -48,6 +48,7 @@ class OfferInfo(TypedDict):
     thumbnail_url: str | None
     condition: str | None
     location_address: str
+    location_district: str | None
 
 
 class TransactionService:
@@ -107,6 +108,11 @@ class TransactionService:
             and can_update
         )
 
+        show_exact_address = transaction.status in (
+            ModelTransactionStatus.TIME_CONFIRMED,
+            ModelTransactionStatus.COMPLETED,
+        )
+
         return {
             "transaction_id": transaction.id,
             "transaction_type": transaction.transaction_type
@@ -128,7 +134,8 @@ class TransactionService:
             "provider_profile_image_url": provider_avatar,
             "proposed_times": proposed_times_str,
             "confirmed_time": serialize_datetime(transaction.confirmed_time),
-            "exact_address": transaction.exact_address,
+            "exact_address": transaction.exact_address if show_exact_address else None,
+            "location_district": transaction.location_district,
             "requester_confirmed": transaction.requester_confirmed_handover,
             "provider_confirmed": transaction.provider_confirmed_handover,
             "created_at": serialize_datetime(transaction.created_at),
@@ -208,6 +215,10 @@ class TransactionService:
         participants_result = await self.db.execute(participants_query)
         all_participants = participants_result.scalars().all()
 
+        conversation_preview = None
+        if conversation:
+            conversation_preview = conversation.last_message_preview
+
         await websocket_manager.send_to_user(
             transaction.requester_id,
             {
@@ -216,6 +227,8 @@ class TransactionService:
                 "message_id": message.id,
                 "transaction_id": transaction.id,
                 "transaction_data": requester_data,
+                "preview": conversation_preview,
+                "last_message_at": now.isoformat(),
             },
         )
 
@@ -227,6 +240,8 @@ class TransactionService:
                 "message_id": message.id,
                 "transaction_id": transaction.id,
                 "transaction_data": provider_data,
+                "preview": conversation_preview,
+                "last_message_at": now.isoformat(),
             },
         )
 
@@ -247,35 +262,6 @@ class TransactionService:
         msg_service = MessageService(self.db)
 
         for participant in all_participants:
-            user_unread = await msg_service.get_unread_count(participant.user_id)
-
-            conv_unread = 0
-            for conv in user_unread.conversations:
-                if conv["conversation_id"] == message.conversation_id:
-                    conv_unread = conv["unread_count"]
-                    break
-
-            await websocket_manager.send_to_user(
-                participant.user_id,
-                {
-                    "type": "conversation_updated",
-                    "conversation_id": message.conversation_id,
-                    "unread_count": conv_unread,
-                    "last_message_preview": conversation.last_message_preview
-                    if conversation
-                    else None,
-                    "last_message_at": now.isoformat(),
-                },
-            )
-
-            await websocket_manager.send_to_user(
-                participant.user_id,
-                {
-                    "type": "unread_count_update",
-                    "data": user_unread.model_dump(),
-                },
-            )
-
             user_unread = await msg_service.get_unread_count(participant.user_id)
             await websocket_manager.send_to_user(
                 participant.user_id,
@@ -361,6 +347,7 @@ class TransactionService:
         meeting_location = await self._get_meeting_location_from_offer(
             data.offer_type, data.offer_id
         )
+        location_district = offer_info.get("location_district")
 
         transaction_metadata = self._build_metadata(
             data, offer_info, requester_id if proposed_times_iso else None
@@ -378,6 +365,7 @@ class TransactionService:
             expires_at=expires_at,
             proposed_times=proposed_times_iso,
             exact_address=meeting_location,
+            location_district=location_district,
             transaction_metadata=transaction_metadata,
         )
 
@@ -445,29 +433,13 @@ class TransactionService:
             )
             await self.db.commit()
 
-            provider_unread_query = select(func.count(Message.id)).where(
-                and_(
-                    Message.conversation_id == conversation_id,
-                    Message.sender_id != provider_id,
-                    Message.is_deleted.is_(False),
-                    Message.id.not_in(
-                        select(MessageReadReceipt.message_id).where(
-                            MessageReadReceipt.user_id == provider_id
-                        )
-                    ),
-                )
-            )
-            provider_unread_result = await self.db.execute(provider_unread_query)
-            provider_unread_count = provider_unread_result.scalar() or 0
-
+            msg_service = MessageService(self.db)
+            provider_unread = await msg_service.get_unread_count(provider_id)
             await websocket_manager.send_to_user(
                 provider_id,
                 {
-                    "type": "conversation_updated",
-                    "conversation_id": conversation_id,
-                    "unread_count": provider_unread_count,
-                    "last_message_preview": conversation.last_message_preview,
-                    "last_message_at": now.isoformat(),
+                    "type": "unread_count_update",
+                    "data": provider_unread.model_dump(),
                 },
             )
 
@@ -607,6 +579,7 @@ class TransactionService:
         transaction_id: int,
         user_id: int,
         new_address: str,
+        location_district: str | None = None,
     ) -> TransactionData:
         transaction = await self._get_transaction_or_404(transaction_id)
 
@@ -622,6 +595,8 @@ class TransactionService:
             )
 
         transaction.exact_address = new_address
+        if location_district:
+            transaction.location_district = location_district
 
         await self._update_message_transaction_data(transaction, user_id)
 
@@ -842,6 +817,7 @@ class TransactionService:
                 thumbnail_url=offer.book.cover_image_url if offer.book else None,
                 condition=offer.condition.value if offer.condition else None,
                 location_address=f"{offer.location_district or 'Unknown'}, Münster",
+                location_district=offer.location_district,
             )
 
         raise HTTPException(status_code=400, detail=f"Unknown offer type: {offer_type}")
@@ -1016,6 +992,12 @@ class TransactionService:
 
         proposed_by = transaction.transaction_metadata.get("proposed_by_user_id")
         can_update = transaction.can_be_updated()
+        is_provider = current_user_id == transaction.provider_id
+
+        show_exact_address = transaction.status in (
+            ModelTransactionStatus.TIME_CONFIRMED,
+            ModelTransactionStatus.COMPLETED,
+        )
 
         return TransactionData(
             transaction_id=transaction.id,
@@ -1038,7 +1020,8 @@ class TransactionService:
             ),
             proposed_times=serialize_datetime_list(transaction.proposed_times),
             confirmed_time=serialize_datetime(transaction.confirmed_time),
-            exact_address=transaction.exact_address,
+            exact_address=transaction.exact_address if show_exact_address else None,
+            location_district=transaction.location_district,
             requester_confirmed=transaction.requester_confirmed_handover,
             provider_confirmed=transaction.provider_confirmed_handover,
             created_at=transaction.created_at,
@@ -1050,6 +1033,9 @@ class TransactionService:
             and len(transaction.proposed_times) > 0
             and proposed_by is not None
             and proposed_by != current_user_id,
+            can_edit_address=is_provider
+            and transaction.status == ModelTransactionStatus.PENDING
+            and can_update,
             can_confirm_handover=can_update
             and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
             can_cancel=can_update
