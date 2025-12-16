@@ -11,8 +11,8 @@ from .types import UTCDateTime
 
 
 class ServiceType(str, Enum):
-    USER_SERVICE = "user_service"
-    PLATFORM_FEATURE = "platform_feature"
+    user_service = "user_service"
+    platform_feature = "platform_feature"
 
     def __str__(self):
         return self.value
