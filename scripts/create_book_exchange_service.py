@@ -54,6 +54,7 @@ async def create_book_exchange_service():
             is_active=True,
             contact_method="message",
             service_image_url=None,  # Will be added manually
+            meeting_locations=[],
         )
 
         db.add(service)
