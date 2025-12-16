@@ -13,7 +13,6 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-# revision identifiers, used by Alembic.
 revision: str = "630fa896e3bf"
 down_revision: Union[str, Sequence[str], None] = "1d7e07e63e50"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -25,46 +24,29 @@ def upgrade() -> None:
     dialect = conn.dialect.name
 
     if dialect == "postgresql":
-        transaction_status_enum = postgresql.ENUM(
-            "pending",
-            "accepted",
-            "time_confirmed",
-            "completed",
-            "cancelled",
-            "rejected",
-            "expired",
-            name="transactionstatus",
-            create_type=True,
-        )
-        transaction_status_enum.create(conn, checkfirst=True)
+        op.execute("""
+            DO $$ BEGIN
+                CREATE TYPE transactionstatus AS ENUM (
+                    'pending', 'accepted', 'time_confirmed', 'completed',
+                    'cancelled', 'rejected', 'expired'
+                );
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """)
 
-        transaction_type_enum = postgresql.ENUM(
-            "book_exchange",
-            "service_meetup",
-            "event_confirmation",
-            name="transactiontype",
-            create_type=True,
-        )
-        transaction_type_enum.create(conn, checkfirst=True)
+        op.execute("""
+            DO $$ BEGIN
+                CREATE TYPE transactiontype AS ENUM (
+                    'book_exchange', 'service_meetup', 'event_confirmation'
+                );
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """)
 
-        status_col = sa.Enum(
-            "pending",
-            "accepted",
-            "time_confirmed",
-            "completed",
-            "cancelled",
-            "rejected",
-            "expired",
-            name="transactionstatus",
-            native_enum=True,
-        )
-        type_col = sa.Enum(
-            "book_exchange",
-            "service_meetup",
-            "event_confirmation",
-            name="transactiontype",
-            native_enum=True,
-        )
+        status_col = sa.String(length=50)
+        type_col = sa.String(length=50)
     else:
         status_col = sa.String(length=20)
         type_col = sa.String(length=30)
@@ -111,6 +93,18 @@ def upgrade() -> None:
     )
     op.create_index("idx_transaction_status", "exchange_transactions", ["status"])
     op.create_index("idx_transaction_expires", "exchange_transactions", ["expires_at"])
+
+    if dialect == "postgresql":
+        op.execute("""
+            ALTER TABLE exchange_transactions
+            ALTER COLUMN status TYPE transactionstatus
+            USING status::transactionstatus
+        """)
+        op.execute("""
+            ALTER TABLE exchange_transactions
+            ALTER COLUMN transaction_type TYPE transactiontype
+            USING transaction_type::transactiontype
+        """)
 
     with op.batch_alter_table("messages", schema=None) as batch_op:
         batch_op.add_column(sa.Column("transaction_data", sa.JSON(), nullable=True))
