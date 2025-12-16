@@ -109,14 +109,7 @@ def upgrade() -> None:
                 WHEN duplicate_object THEN null;
             END $$;
         """)
-        condition_type = sa.Enum(
-            "new",
-            "like_new",
-            "good",
-            "acceptable",
-            name="bookcondition",
-            create_type=False,
-        )
+        condition_type = sa.String(length=50)
     else:
         condition_type = sa.String(length=20)
 
@@ -158,6 +151,13 @@ def upgrade() -> None:
     op.create_index("idx_book_offers_book", "book_offers", ["book_id"])
     op.create_index("idx_book_offers_created", "book_offers", ["created_at"])
     op.create_index("idx_book_offers_available", "book_offers", ["is_available"])
+
+    if dialect == "postgresql":
+        op.execute("""
+            ALTER TABLE book_offers
+            ALTER COLUMN condition TYPE bookcondition
+            USING condition::bookcondition
+        """)
 
 
 def downgrade() -> None:
