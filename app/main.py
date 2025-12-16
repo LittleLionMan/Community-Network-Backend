@@ -7,7 +7,7 @@ from typing import Annotated, cast
 
 import sentry_sdk
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, Request
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
@@ -556,6 +556,103 @@ async def trigger_cleanup(
         return {"message": "Cleanup triggered successfully (including token cleanup)"}
     except Exception as e:
         return {"message": f"Cleanup failed: {str(e)}"}
+
+
+@app.post("/api/admin/newsletter/send")
+async def send_newsletter(
+    request: Request,
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    message: str = Body(..., embed=True, min_length=10, max_length=5000),
+):
+    try:
+        SecurityLogger.log_admin_action(
+            request,
+            admin_user_id=current_admin.id,
+            action="send_newsletter",
+            details={"message_length": len(message)},
+        )
+
+        result = await db.execute(
+            select(User).where(
+                User.is_active,
+                User.email_verified,
+                User.email_notifications_newsletter,
+            )
+        )
+        recipients = result.scalars().all()
+
+        if not recipients:
+            return {
+                "message": "Keine Newsletter-Empfänger gefunden",
+                "recipients_count": 0,
+                "emails_sent": 0,
+                "emails_failed": 0,
+                "admin_user": current_admin.display_name,
+            }
+
+        from app.core.email_templates import generate_newsletter_email
+        from app.services.email_service import EmailService
+
+        recipient_list = [
+            {"email": user.email, "name": user.display_name} for user in recipients
+        ]
+
+        def create_newsletter_html(recipient_name: str) -> str:
+            return generate_newsletter_email(recipient_name, message)
+
+        results = EmailService.send_bulk_emails(
+            recipients=recipient_list,
+            subject="Community Newsletter",
+            html_content_generator=create_newsletter_html,
+        )
+
+        from app.core.telegram import TelegramNotifier, notify_telegram
+
+        telegram_message = (
+            f"📰 <b>Newsletter versendet</b>\n\n"
+            f"👤 <b>Admin:</b> {current_admin.display_name}\n"
+            f"📊 <b>Empfänger:</b> {len(recipient_list)}\n"
+            f"✅ <b>Erfolgreich:</b> {results['success']}\n"
+            f"❌ <b>Fehlgeschlagen:</b> {results['failed']}\n"
+            f"📝 <b>Nachricht:</b> {message[:100]}{'...' if len(message) > 100 else ''}"
+        )
+
+        notify_telegram(TelegramNotifier.send_message(telegram_message, level="info"))
+
+        return {
+            "message": "Newsletter erfolgreich versendet",
+            "recipients_count": len(recipient_list),
+            "emails_sent": results["success"],
+            "emails_failed": results["failed"],
+            "admin_user": current_admin.display_name,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Newsletter sending failed: {e}")
+
+        from app.core.telegram import TelegramNotifier, notify_telegram
+
+        notify_telegram(
+            TelegramNotifier.notify_error(
+                error_type="newsletter_error",
+                error_message=str(e),
+                user_id=current_admin.id,
+                endpoint="/api/admin/newsletter/send",
+            )
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "message": "Newsletter-Versand fehlgeschlagen",
+                "error": str(e),
+                "recipients_count": 0,
+                "emails_sent": 0,
+                "emails_failed": 0,
+            },
+        )
 
 
 @app.exception_handler(Exception)

@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
 from app.database import get_db
+from app.models.book_offer import BookOffer
 from app.models.exchange_transaction import TransactionStatus as ModelTransactionStatus
 from app.models.user import User
 from app.schemas.transaction import (
@@ -144,3 +146,73 @@ async def get_user_transactions(
         status_filter=status_filter,
         limit=limit,
     )
+
+
+@router.get("/marketplace/can-create-offer")
+async def check_can_create_marketplace_offer(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool | str | int | dict[str, int]]:
+    if not current_user.messages_enabled:
+        return {
+            "can_create": False,
+            "reason": "messages_disabled",
+            "message": "Du musst Nachrichten aktivieren, um Angebote zu erstellen",
+        }
+
+    if not current_user.messages_from_strangers:
+        return {
+            "can_create": False,
+            "reason": "strangers_disabled",
+            "message": "Du musst Nachrichten von Fremden aktivieren, um Angebote zu erstellen",
+        }
+
+    from app.models.book_offer import BookOffer
+
+    book_offers_query = select(func.count(BookOffer.id)).where(
+        BookOffer.owner_id == current_user.id,
+        BookOffer.is_available,
+    )
+    book_offers_result = await db.execute(book_offers_query)
+    book_offers_count = book_offers_result.scalar() or 0
+
+    # TODO: Hier weitere Offer-Typen hinzufügen wenn implementiert
+    # service_offers_query = select(func.count(ServiceOffer.id)).where(...)
+    # item_offers_query = select(func.count(ItemOffer.id)).where(...)
+
+    total_active_offers = book_offers_count
+
+    return {
+        "can_create": True,
+        "has_active_offers": total_active_offers > 0,
+        "active_offers_count": total_active_offers,
+        "offers_by_type": {
+            "book_offers": book_offers_count,
+            # "service_offers": service_offers_count,
+            # "item_offers": item_offers_count,
+        },
+    }
+
+
+@router.get("/marketplace/active-offers-count")
+async def get_active_marketplace_offers_count(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    book_offers_query = select(func.count(BookOffer.id)).where(
+        BookOffer.owner_id == current_user.id,
+        BookOffer.is_available,
+    )
+    book_offers_result = await db.execute(book_offers_query)
+    book_offers_count = book_offers_result.scalar() or 0
+
+    # TODO: Hier weitere Offer-Typen hinzufügen wenn implementiert
+
+    total_count = book_offers_count
+
+    return {
+        "total_count": total_count,
+        "book_offers": book_offers_count,
+        # "service_offers": service_offers_count,
+        # "item_offers": item_offers_count,
+    }

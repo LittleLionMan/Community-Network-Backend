@@ -1,9 +1,10 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 import re
 
-from app.models.notification import Notification
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.forum import ForumPost, ForumThread
+from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.user import UserSummary
 from app.services.websocket_service import websocket_manager
@@ -173,6 +174,100 @@ class NotificationService:
                 "thread_title": thread.title,
                 "message": f"{actor.display_name} hat deinen Post zitiert",
                 "actor": notification_data["actor"],
+            },
+        )
+
+        return notification
+
+    @staticmethod
+    async def create_credit_received_notification(
+        db: AsyncSession,
+        recipient_id: int,
+        sender_id: int,
+        credit_amount: int,
+        offer_title: str,
+        transaction_id: int,
+    ):
+        sender_result = await db.execute(select(User).where(User.id == sender_id))
+        sender = sender_result.scalar_one_or_none()
+
+        if not sender:
+            return None
+
+        notification_data = {
+            "transaction_id": transaction_id,
+            "credit_amount": credit_amount,
+            "offer_title": offer_title,
+            "sender": UserSummary.model_validate(sender).model_dump(mode="json"),
+        }
+
+        notification = Notification(
+            user_id=recipient_id,
+            type="credit_received",
+            data=notification_data,
+        )
+
+        db.add(notification)
+        await db.flush()
+        await db.refresh(notification)
+
+        await websocket_manager.send_to_user(
+            recipient_id,
+            {
+                "type": "credit_received",
+                "notification_id": notification.id,
+                "transaction_id": transaction_id,
+                "credit_amount": credit_amount,
+                "offer_title": offer_title,
+                "message": f"Du hast {credit_amount} Credit{'s' if credit_amount != 1 else ''} für '{offer_title}' erhalten",
+                "sender": notification_data["sender"],
+            },
+        )
+
+        return notification
+
+    @staticmethod
+    async def create_credit_spent_notification(
+        db: AsyncSession,
+        spender_id: int,
+        recipient_id: int,
+        credit_amount: int,
+        offer_title: str,
+        transaction_id: int,
+    ):
+        recipient_result = await db.execute(select(User).where(User.id == recipient_id))
+        recipient = recipient_result.scalar_one_or_none()
+
+        if not recipient:
+            return None
+
+        notification_data = {
+            "transaction_id": transaction_id,
+            "credit_amount": credit_amount,
+            "offer_title": offer_title,
+            "recipient": UserSummary.model_validate(recipient).model_dump(mode="json"),
+        }
+
+        notification = Notification(
+            user_id=spender_id,
+            type="credit_spent",
+            data=notification_data,
+        )
+
+        db.add(notification)
+        await db.flush()
+        await db.refresh(notification)
+
+        await websocket_manager.send_to_user(
+            spender_id,
+            {
+                "type": "credit_spent",
+                "notification_id": notification.id,
+                "transaction_id": transaction_id,
+                "credit_amount": credit_amount,
+                "offer_title": offer_title,
+                "message": f"Du hast {credit_amount} Credit{'s' if credit_amount != 1 else ''} für '{offer_title}' ausgegeben",
+                "recipient": notification_data["recipient"],
             },
         )
 

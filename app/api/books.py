@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -11,6 +12,7 @@ from app.core.rate_limit_decorator import read_rate_limit
 from app.database import get_db
 from app.models.book import Book
 from app.models.book_offer import BookCondition, BookOffer
+from app.models.exchange_transaction import ExchangeTransaction, TransactionStatus
 from app.models.user import User
 from app.schemas.book import BookRead
 from app.schemas.book_offer import BookOfferCreate, BookOfferRead, BookOfferUpdate
@@ -349,20 +351,27 @@ async def get_stats(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User | None, Depends(get_optional_current_user)],
 ):
-    total_books_query = select(func.count(Book.id.distinct()))
-    total_offers_query = select(func.count(BookOffer.id))
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
     available_offers_query = select(func.count(BookOffer.id)).where(
         BookOffer.is_available
     )
+    new_this_week_query = select(func.count(BookOffer.id)).where(
+        BookOffer.created_at >= seven_days_ago
+    )
+    successful_exchanges_query = select(func.count(ExchangeTransaction.id)).where(
+        ExchangeTransaction.transaction_type == "book_exchange",
+        ExchangeTransaction.status == TransactionStatus.COMPLETED,
+    )
 
-    total_books = (await db.execute(total_books_query)).scalar() or 0
-    total_offers = (await db.execute(total_offers_query)).scalar() or 0
     available_offers = (await db.execute(available_offers_query)).scalar() or 0
+    new_this_week = (await db.execute(new_this_week_query)).scalar() or 0
+    successful_exchanges = (await db.execute(successful_exchanges_query)).scalar() or 0
 
     stats = {
-        "total_books": total_books,
-        "total_offers": total_offers,
         "available_offers": available_offers,
+        "new_this_week": new_this_week,
+        "successful_exchanges": successful_exchanges,
     }
 
     if current_user:
@@ -387,7 +396,7 @@ async def get_filter_options(
 ):
     districts_query = (
         select(BookOffer.location_district)
-        .where(BookOffer.location_district.isnot(None), BookOffer.is_available == True)
+        .where(BookOffer.location_district.isnot(None), BookOffer.is_available)
         .distinct()
     )
     districts_result = await db.execute(districts_query)

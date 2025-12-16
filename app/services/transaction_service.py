@@ -36,6 +36,7 @@ from app.schemas.transaction import (
 from app.services.availability_service import AvailabilityService
 from app.services.location_service import LocationService
 from app.services.message_service import MessageService
+from app.services.notification_service import NotificationService
 from app.services.websocket_service import websocket_manager
 from app.utils.datetime_utils import serialize_datetime, serialize_datetime_list
 
@@ -959,6 +960,26 @@ class TransactionService:
         requester.book_credits_remaining -= transaction.credit_amount
         provider.book_credits_remaining += transaction.credit_amount
         transaction.credit_transferred = True
+
+        offer_title = transaction.transaction_metadata.get("offer_title", "Unbekannt")
+
+        await NotificationService.create_credit_received_notification(
+            db=self.db,
+            recipient_id=transaction.provider_id,
+            sender_id=transaction.requester_id,
+            credit_amount=transaction.credit_amount,
+            offer_title=offer_title,
+            transaction_id=transaction.id,
+        )
+
+        await NotificationService.create_credit_spent_notification(
+            db=self.db,
+            spender_id=transaction.requester_id,
+            recipient_id=transaction.provider_id,
+            credit_amount=transaction.credit_amount,
+            offer_title=offer_title,
+            transaction_id=transaction.id,
+        )
 
         logger.info(
             f"Credits transferred: {transaction.credit_amount} from {requester.id} to {provider.id}"

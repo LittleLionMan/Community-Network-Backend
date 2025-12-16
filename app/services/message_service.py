@@ -4,7 +4,9 @@ from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..core.auth import generate_new_message_notification_email, send_email
+from app.core.email_templates import generate_new_message_notification_email
+from app.services.email_service import EmailService
+
 from ..models.message import (
     Conversation,
     ConversationParticipant,
@@ -265,11 +267,10 @@ class MessageService:
                 message_preview=message_content,
             )
 
-            send_email(
+            EmailService.send_email(
                 to_email=recipient.email,
                 subject=f"Neue Nachricht von {sender_name}",
-                body=email_html,
-                is_html=True,
+                html_content=email_html,
             )
 
         except Exception as e:

@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .user import UserSummary
 
@@ -8,10 +9,10 @@ NotificationType = Literal[
     "forum_reply",
     "forum_mention",
     "forum_quote",
-    # Future: Service notifications
+    "credit_received",
+    "credit_spent",
     "service_interest",
     "service_response",
-    # Future: Event notifications
     "event_update",
     "event_cancelled",
 ]

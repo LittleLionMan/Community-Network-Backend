@@ -1,22 +1,27 @@
 from datetime import datetime, timedelta, timezone
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+
 from fastapi import HTTPException, status
-from ..models.user import User
-from ..models.auth import RefreshToken, EmailVerificationToken, PasswordResetToken
-from ..schemas.auth import UserRegister, TokenResponse
-from ..core.auth import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    create_refresh_token,
-    hash_token,
-    send_email,
-    generate_verification_email,
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.email_templates import (
     generate_password_reset_email,
+    generate_verification_email,
+)
+from app.services.email_service import EmailService
+
+from ..core.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
+    create_access_token,
+    create_refresh_token,
+    get_password_hash,
+    hash_token,
+    verify_password,
 )
+from ..models.auth import EmailVerificationToken, PasswordResetToken, RefreshToken
+from ..models.user import User
+from ..schemas.auth import TokenResponse, UserRegister
 
 
 class AuthService:
@@ -245,7 +250,7 @@ class AuthService:
         await self.db.commit()
 
         email_body = generate_password_reset_email(reset_token)
-        send_email(email, "Passwort zurücksetzen", email_body, is_html=True)
+        EmailService.send_email(email, "Passwort zurücksetzen", email_body)
 
         return True
 
@@ -328,7 +333,7 @@ class AuthService:
         await self.db.commit()
 
         email_body = generate_verification_email(verification_token)
-        send_email(user.email, "E-Mail-Adresse bestätigen", email_body, is_html=True)
+        EmailService.send_email(user.email, "E-Mail-Adresse bestätigen", email_body)
 
     async def update_user_password(self, user_id: int, new_password: str) -> bool:
         try:

@@ -1,43 +1,47 @@
+import asyncio
+import json
+import logging
+from typing import Annotated, cast
+
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    status,
     Query,
     WebSocket,
     WebSocketDisconnect,
+    status,
 )
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-import json
-import logging
-import asyncio
-from typing import Annotated, cast
 
-from ..database import get_db
-from ..core.dependencies import get_current_user, get_current_admin_user
 from app.core.rate_limit_decorator import (
-    message_rate_limit,
     conversation_rate_limit,
+    message_rate_limit,
     read_rate_limit,
 )
+
+from ..core.dependencies import get_current_admin_user, get_current_user
+from ..database import get_db
+from ..models.book_offer import BookOffer
 from ..models.user import User
-from ..services.message_service import MessageService
-from ..services.websocket_service import websocket_manager
-from ..services.websocket_auth_service import websocket_auth_manager
 from ..schemas.message import (
     ConversationCreate,
-    MessageCreate,
-    MessageUpdate,
-    ConversationResponse,
-    MessageResponse,
     ConversationDetailResponse,
-    MessageListResponse,
     ConversationListResponse,
-    UnreadCountResponse,
-    MessageModerationAction,
+    ConversationResponse,
     ConversationSettings,
+    MessageCreate,
+    MessageListResponse,
+    MessageModerationAction,
     MessagePrivacySettings,
+    MessageResponse,
+    MessageUpdate,
+    UnreadCountResponse,
 )
+from ..services.message_service import MessageService
+from ..services.websocket_auth_service import websocket_auth_manager
+from ..services.websocket_service import websocket_manager
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +252,43 @@ async def update_message_privacy_settings(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    if settings.messages_enabled is False or settings.messages_from_strangers is False:
+        book_offers_query = select(func.count(BookOffer.id)).where(
+            BookOffer.owner_id == current_user.id,
+            BookOffer.is_available,
+        )
+        book_offers_result = await db.execute(book_offers_query)
+        book_offers_count = book_offers_result.scalar() or 0
+
+        # TODO: Hier weitere Offer-Typen hinzufügen wenn implementiert
+        # from app.models.service_offer import ServiceOffer
+        # service_offers_query = select(func.count(ServiceOffer.id)).where(...)
+
+        total_active_offers = book_offers_count
+
+        if total_active_offers > 0:
+            offer_details = []
+            if book_offers_count > 0:
+                offer_details.append(
+                    f"{book_offers_count} Buch-Angebot{'e' if book_offers_count != 1 else ''}"
+                )
+
+            offers_text = ", ".join(offer_details)
+
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "active_offers_exist",
+                    "message": "Du kannst Nachrichten nicht deaktivieren, solange du aktive Marktplatz-Angebote hast",
+                    "user_message": f"Du kannst Nachrichten nicht deaktivieren, solange du aktive Marktplatz-Angebote hast. Du hast aktuell: {offers_text}. Bitte deaktiviere oder lösche zuerst alle aktiven Angebote.",
+                    "active_offers_count": total_active_offers,
+                    "offers_by_type": {
+                        "book_offers": book_offers_count,
+                        # "service_offers": service_offers_count,
+                    },
+                },
+            )
+
     old_settings = {
         "messages_enabled": current_user.messages_enabled,
         "messages_from_strangers": current_user.messages_from_strangers,
@@ -433,7 +474,8 @@ async def cleanup_empty_conversations(
 @router.get("/admin/stats", dependencies=[Depends(get_current_admin_user)])
 async def get_message_stats(db: Annotated[AsyncSession, Depends(get_db)]):
     from sqlalchemy import func, select
-    from ..models.message import Message, Conversation
+
+    from ..models.message import Conversation, Message
 
     total_messages = await db.execute(select(func.count(Message.id)))
     total_conversations = await db.execute(select(func.count(Conversation.id)))

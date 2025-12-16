@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, Float, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -55,7 +55,9 @@ class User(Base):
 
     email_notifications_events: Mapped[bool] = mapped_column(Boolean, default=True)
     email_notifications_messages: Mapped[bool] = mapped_column(Boolean, default=False)
-    email_notifications_newsletter: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_notifications_newsletter: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("1")
+    )
 
     notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="user", cascade="all, delete-orphan"
