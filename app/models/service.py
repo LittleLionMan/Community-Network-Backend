@@ -32,7 +32,12 @@ class Service(Base):
     )
 
     service_type: Mapped[ServiceType] = mapped_column(
-        SQLEnum(ServiceType, native_enum=True, name="servicetype"),
+        SQLEnum(
+            ServiceType,
+            values_callable=lambda x: [e.value for e in x],
+            native_enum=True,
+            name="servicetype",
+        ),
         default=ServiceType.USER_SERVICE,
         nullable=False,
         index=True,
