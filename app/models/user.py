@@ -1,6 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
-from dateutil.relativedelta import relativedelta
 from sqlalchemy import Boolean, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -20,7 +19,7 @@ class User(Base):
     first_name: Mapped[str | None] = mapped_column(String(100))
     last_name: Mapped[str | None] = mapped_column(String(100))
     bio: Mapped[str | None] = mapped_column(Text)
-    location: Mapped[str | None] = mapped_column(String(200))
+    exact_address: Mapped[str | None] = mapped_column(String(200))
     profile_image_url: Mapped[str | None] = mapped_column(String(500))
 
     location_lat: Mapped[float | None] = mapped_column(Float)
@@ -44,7 +43,7 @@ class User(Base):
     first_name_private: Mapped[bool] = mapped_column(Boolean, default=False)
     last_name_private: Mapped[bool] = mapped_column(Boolean, default=False)
     bio_private: Mapped[bool] = mapped_column(Boolean, default=False)
-    location_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    exact_address_private: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active_private: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at_private: Mapped[bool] = mapped_column(Boolean, default=False)
     messages_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

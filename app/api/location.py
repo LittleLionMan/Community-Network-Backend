@@ -15,6 +15,7 @@ class LocationValidationResponse(BaseModel):
     district: str | None = None
     lat: float | None = None
     lon: float | None = None
+    formatted_address: str | None = None
     message: str
 
 
@@ -42,5 +43,6 @@ async def validate_location(data: LocationValidationRequest):
         district=result["district"],
         lat=lat_rounded,
         lon=lon_rounded,
+        formatted_address=result["formatted_address"],
         message=f"Standort gefunden: {result['district']}",
     )

@@ -116,20 +116,26 @@ async def update_current_user(
             )
 
     update_data: dict[str, object] = user_update.model_dump(exclude_unset=True)
+    if "exact_address" in update_data and update_data["exact_address"]:
+        location_string = str(update_data["exact_address"])
 
-    if "location" in update_data and update_data["location"]:
-        location_string = str(update_data["location"])
-        geocode_success = await LocationService.geocode_user_location(
-            db, current_user, location_string
-        )
+        geocode_result = await LocationService.geocode_location(location_string)
 
-        if not geocode_success:
+        if not geocode_result:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Der angegebene Standort konnte nicht gefunden werden. Bitte überprüfen Sie die Adresse.",
             )
 
-        update_data.pop("location")
+        current_user.exact_address = geocode_result["formatted_address"]
+        current_user.location_lat, current_user.location_lon = (
+            LocationService.round_coordinates(
+                geocode_result["lat"], geocode_result["lon"]
+            )
+        )
+        current_user.location_district = geocode_result["district"]
+
+        update_data.pop("exact_address")
 
     for field, value in update_data.items():
         if hasattr(current_user, field):

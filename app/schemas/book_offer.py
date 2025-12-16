@@ -44,6 +44,7 @@ class _BookOfferReadData(TypedDict):
     condition_label: str | None
     notes: str | None
     user_comment: str | None
+    exact_address: str | None
     location_district: str | None
     distance_km: float | None
     is_available: bool
@@ -135,6 +136,7 @@ class BookOfferRead(BookOfferBase):
     owner_id: int
     condition_label: str | None = None
     user_comment: str | None = None
+    exact_address: str | None = None
     location_district: str | None = None
     distance_km: float | None = None
     is_available: bool
@@ -167,6 +169,7 @@ class BookOfferRead(BookOfferBase):
             "condition_label": condition_label,
             "notes": offer.notes,
             "user_comment": offer.user_comment,
+            "exact_address": offer.exact_address,
             "location_district": offer.location_district,
             "distance_km": distance_km,
             "is_available": offer.is_available,

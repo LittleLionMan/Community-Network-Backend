@@ -11,7 +11,7 @@ class UserCreate(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
     bio: str | None = Field(None, max_length=1000)
-    location: str | None = Field(None, max_length=200)
+    exact_address: str | None = Field(None, max_length=200)
 
     @field_validator("password")
     @classmethod
@@ -30,13 +30,13 @@ class UserUpdate(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
     bio: str | None = Field(None, max_length=1000)
-    location: str | None = Field(None, max_length=200)
+    exact_address: str | None = Field(None, max_length=200)
 
     email_private: bool | None = None
     first_name_private: bool | None = None
     last_name_private: bool | None = None
     bio_private: bool | None = None
-    location_private: bool | None = None
+    exact_address_private: bool | None = None
     created_at_private: bool | None = None
     is_active_private: bool | None = None
 
@@ -62,7 +62,7 @@ class UserPublic(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     bio: str | None = None
-    location: str | None = None
+    exact_address: str | None = None
     location_district: str | None = None
     book_credits_remaining: int | None = None
     created_at: datetime | None = None
@@ -78,7 +78,7 @@ class UserAdmin(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     bio: str | None = None
-    location: str | None = None
+    exact_address: str | None = None
     location_district: str | None = None
     book_credits_remaining: int
     book_credits_last_reset: datetime | None = None
@@ -99,7 +99,7 @@ class UserPrivate(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
     bio: str | None = None
-    location: str | None = None
+    exact_address: str | None = None
     location_district: str | None = None
     book_credits_remaining: int
     book_credits_last_reset: datetime | None = None
@@ -114,7 +114,7 @@ class UserPrivate(BaseModel):
     first_name_private: bool
     last_name_private: bool
     bio_private: bool
-    location_private: bool
+    exact_address_private: bool
     created_at_private: bool
     is_active_private: bool
 

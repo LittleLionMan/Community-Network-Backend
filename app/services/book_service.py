@@ -251,6 +251,7 @@ class BookService:
         location_lat = user.location_lat
         location_lon = user.location_lon
         location_district = user.location_district
+        exact_address = user.exact_address
 
         if data.custom_location:
             geocode_result = await LocationService.geocode_location(
@@ -266,6 +267,7 @@ class BookService:
                 geocode_result["lat"], geocode_result["lon"]
             )
             location_district = geocode_result["district"]
+            exact_address = geocode_result["formatted_address"]
         else:
             if not user.location_lat or not user.location_lon:
                 raise HTTPException(
@@ -282,6 +284,7 @@ class BookService:
             location_lat=location_lat,
             location_lon=location_lon,
             location_district=location_district,
+            exact_address=exact_address,
             is_available=True,
         )
 
@@ -350,6 +353,7 @@ class BookService:
                 geocode_result["lat"], geocode_result["lon"]
             )
             offer.location_district = geocode_result["district"]
+            offer.exact_address = geocode_result["formatted_address"]
             update_data.pop("custom_location")
 
         for key, value in update_data.items():

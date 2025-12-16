@@ -72,7 +72,6 @@ class UpdateAddressRequest(BaseModel):
 
 class ConfirmTimeRequest(BaseModel):
     confirmed_time: str
-    exact_address: str = Field(..., min_length=1, max_length=500)
 
     @field_validator("confirmed_time")
     @classmethod

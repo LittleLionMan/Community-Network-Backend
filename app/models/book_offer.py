@@ -31,6 +31,7 @@ class BookOffer(BaseExchangeOffer):
     )
 
     user_comment: Mapped[str | None] = mapped_column(Text)
+    exact_address: Mapped[str | None] = mapped_column(String(500))
     custom_cover_image_url: Mapped[str | None] = mapped_column(String(500))
 
     reserved_until: Mapped[datetime | None] = mapped_column(UTCDateTime)

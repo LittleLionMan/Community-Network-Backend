@@ -34,6 +34,7 @@ from app.schemas.transaction import (
     TransactionParticipantInfo,
 )
 from app.services.availability_service import AvailabilityService
+from app.services.location_service import LocationService
 from app.services.message_service import MessageService
 from app.services.websocket_service import websocket_manager
 from app.utils.datetime_utils import serialize_datetime, serialize_datetime_list
@@ -47,8 +48,8 @@ class OfferInfo(TypedDict):
     title: str
     thumbnail_url: str | None
     condition: str | None
-    location_address: str
     location_district: str | None
+    exact_address: str | None
 
 
 class TransactionService:
@@ -79,6 +80,8 @@ class TransactionService:
         offer_title: str,
         offer_thumbnail: str | None,
         offer_condition: str | None,
+        offer_location_district: str | None,
+        offer_exact_address: str | None,
         current_user_id: int,
     ) -> dict[str, str | int | bool | None]:
         proposed_times_str = ",".join(
@@ -134,8 +137,10 @@ class TransactionService:
             "provider_profile_image_url": provider_avatar,
             "proposed_times": proposed_times_str,
             "confirmed_time": serialize_datetime(transaction.confirmed_time),
-            "exact_address": transaction.exact_address if show_exact_address else None,
-            "location_district": transaction.location_district,
+            "exact_address": offer_exact_address if show_exact_address else None,
+            "location_district": offer_location_district
+            if not show_exact_address
+            else None,
             "requester_confirmed": transaction.requester_confirmed_handover,
             "provider_confirmed": transaction.provider_confirmed_handover,
             "created_at": serialize_datetime(transaction.created_at),
@@ -181,6 +186,8 @@ class TransactionService:
             offer_title=offer_info["title"],
             offer_thumbnail=offer_info["thumbnail_url"],
             offer_condition=offer_info["condition"],
+            offer_location_district=offer_info["location_district"],
+            offer_exact_address=offer_info["exact_address"],
             current_user_id=transaction.requester_id,
         )
 
@@ -193,6 +200,8 @@ class TransactionService:
             offer_title=offer_info["title"],
             offer_thumbnail=offer_info["thumbnail_url"],
             offer_condition=offer_info["condition"],
+            offer_location_district=offer_info["location_district"],
+            offer_exact_address=offer_info["exact_address"],
             current_user_id=transaction.provider_id,
         )
 
@@ -344,11 +353,6 @@ class TransactionService:
         self.db.add(transaction_message)
         await self.db.flush()
 
-        meeting_location = await self._get_meeting_location_from_offer(
-            data.offer_type, data.offer_id
-        )
-        location_district = offer_info.get("location_district")
-
         transaction_metadata = self._build_metadata(
             data, offer_info, requester_id if proposed_times_iso else None
         )
@@ -364,8 +368,6 @@ class TransactionService:
             created_at=now,
             expires_at=expires_at,
             proposed_times=proposed_times_iso,
-            exact_address=meeting_location,
-            location_district=location_district,
             transaction_metadata=transaction_metadata,
         )
 
@@ -389,6 +391,8 @@ class TransactionService:
             offer_title=offer_info["title"],
             offer_thumbnail=offer_info["thumbnail_url"],
             offer_condition=offer_info["condition"],
+            offer_location_district=offer_info["location_district"],
+            offer_exact_address=offer_info["exact_address"],
             current_user_id=requester_id,
         )
 
@@ -539,9 +543,6 @@ class TransactionService:
         transaction.status = ModelTransactionStatus.TIME_CONFIRMED
         transaction.confirmed_time = confirmed_dt
 
-        if not transaction.exact_address:
-            transaction.exact_address = data.exact_address
-
         transaction.time_confirmed_at = datetime.now(timezone.utc)
         transaction.expires_at = confirmed_dt + timedelta(days=365)
 
@@ -594,18 +595,34 @@ class TransactionService:
                 detail="Address can only be changed before time confirmation",
             )
 
-        transaction.exact_address = new_address
-        if location_district:
-            transaction.location_district = location_district
+        if transaction.offer_type == "book_offer":
+            result = await self.db.execute(
+                select(BookOffer).where(BookOffer.id == transaction.offer_id)
+            )
+            offer = result.scalar_one_or_none()
+
+            if offer and offer.owner_id == user_id:
+                geocode_result = await LocationService.geocode_location(new_address)
+
+                if not geocode_result:
+                    raise HTTPException(
+                        status_code=400, detail="Adresse konnte nicht gefunden werden"
+                    )
+
+                offer.exact_address = geocode_result["formatted_address"]
+                offer.location_lat, offer.location_lon = (
+                    LocationService.round_coordinates(
+                        geocode_result["lat"], geocode_result["lon"]
+                    )
+                )
+                offer.location_district = geocode_result["district"]
+
+                logger.info(f"Updated book_offer {offer.id} address by user {user_id}")
 
         await self._update_message_transaction_data(transaction, user_id)
 
         await self.db.commit()
         await self.db.refresh(transaction)
-
-        logger.info(
-            f"Address updated for transaction {transaction_id} by user {user_id}"
-        )
 
         return await self._build_transaction_data(transaction, user_id)
 
@@ -816,8 +833,8 @@ class TransactionService:
                 title=offer.book.title if offer.book else "Unknown",
                 thumbnail_url=offer.book.cover_image_url if offer.book else None,
                 condition=offer.condition.value if offer.condition else None,
-                location_address=f"{offer.location_district or 'Unknown'}, Münster",
                 location_district=offer.location_district,
+                exact_address=offer.exact_address,
             )
 
         raise HTTPException(status_code=400, detail=f"Unknown offer type: {offer_type}")
@@ -881,18 +898,6 @@ class TransactionService:
 
         await self.db.flush()
         return new_conversation.id
-
-    async def _get_meeting_location_from_offer(
-        self, offer_type: str, offer_id: int
-    ) -> str:
-        if offer_type == "book_offer":
-            result = await self.db.execute(
-                select(BookOffer).where(BookOffer.id == offer_id)
-            )
-            offer = result.scalar_one_or_none()
-            if offer and offer.location_district:
-                return f"{offer.location_district}, Münster"
-        return "Münster"
 
     async def _reserve_book_offer(
         self, offer_id: int, user_id: int, until: datetime
@@ -1020,8 +1025,10 @@ class TransactionService:
             ),
             proposed_times=serialize_datetime_list(transaction.proposed_times),
             confirmed_time=serialize_datetime(transaction.confirmed_time),
-            exact_address=transaction.exact_address if show_exact_address else None,
-            location_district=transaction.location_district,
+            exact_address=offer_info["exact_address"] if show_exact_address else None,
+            location_district=offer_info["location_district"]
+            if not show_exact_address
+            else None,
             requester_confirmed=transaction.requester_confirmed_handover,
             provider_confirmed=transaction.provider_confirmed_handover,
             created_at=transaction.created_at,

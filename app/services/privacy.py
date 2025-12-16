@@ -40,8 +40,8 @@ class PrivacyService:
         if not user.bio_private and user.bio:
             user_data["bio"] = user.bio
 
-        if not user.location_private and user.location:
-            user_data["location"] = user.location
+        if not user.exact_address_private and user.exact_address:
+            user_data["exact_address"] = user.exact_address
 
         if not user.created_at_private:
             user_data["created_at"] = user.created_at

@@ -19,6 +19,7 @@ class GeocodingResult(TypedDict):
     lat: float
     lon: float
     district: str
+    formatted_address: str
 
 
 class LocationService:
@@ -28,6 +29,44 @@ class LocationService:
 
     _lock: asyncio.Lock = asyncio.Lock()
     _last_request_time: float | None = None
+
+    @staticmethod
+    def _format_address(address: dict[str, Any], display_name: str) -> str:
+        road = address.get("road")
+        house_number = address.get("house_number")
+        postcode = address.get("postcode")
+        city = address.get("city") or address.get("town") or address.get("village")
+
+        if road and house_number and postcode and city:
+            return f"{road} {house_number}, {postcode} {city}"
+
+        if road and postcode and city:
+            return f"{road}, {postcode} {city}"
+
+        poi = address.get("amenity") or address.get("building") or address.get("name")
+        if poi and postcode and city:
+            return f"{poi}, {postcode} {city}"
+
+        parts = [p.strip() for p in display_name.split(",")]
+        if len(parts) >= 3:
+            street_part = parts[0]
+
+            postcode_part = None
+            city_part = None
+            for i, part in enumerate(parts):
+                if part.strip().isdigit() and len(part.strip()) == 5:
+                    postcode_part = part.strip()
+                    if i > 0:
+                        city_part = parts[i - 1].strip()
+                    break
+
+            if postcode_part and city_part:
+                return f"{street_part}, {postcode_part} {city_part}"
+
+        if len(parts) >= 2:
+            return f"{parts[0]}, {parts[-1]}"
+
+        return display_name[:100]
 
     @classmethod
     async def _rate_limit(cls) -> None:
@@ -84,7 +123,15 @@ class LocationService:
                     or "Unbekannt"
                 )
 
-                return GeocodingResult(lat=lat, lon=lon, district=district)
+                display_name = result.get("display_name", "")
+                formatted_address = cls._format_address(address, display_name)
+
+                return GeocodingResult(
+                    lat=lat,
+                    lon=lon,
+                    district=district,
+                    formatted_address=formatted_address,
+                )
 
         except httpx.TimeoutException:
             logger.error(f"Geocoding timeout for: {location_string}")
@@ -130,7 +177,7 @@ class LocationService:
 
         lat_rounded, lon_rounded = cls.round_coordinates(result["lat"], result["lon"])
 
-        user.location = location_string
+        user.exact_address = result["formatted_address"]
         user.location_lat = lat_rounded
         user.location_lon = lon_rounded
         user.location_district = result["district"]
