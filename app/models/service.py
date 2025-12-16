@@ -29,7 +29,7 @@ class Service(Base):
     )
 
     service_type: Mapped[ServiceType] = mapped_column(
-        SQLEnum(ServiceType, native_enum=False, length=20),
+        SQLEnum(ServiceType, native_enum=True, name="servicetype"),
         default=ServiceType.USER_SERVICE,
         nullable=False,
         index=True,
