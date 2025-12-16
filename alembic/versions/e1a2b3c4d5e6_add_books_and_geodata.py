@@ -117,7 +117,7 @@ def upgrade() -> None:
             "good",
             "acceptable",
             name="bookcondition",
-            native_enum=True,
+            create_type=False,
         )
     else:
         condition_type = sa.String(length=20)
