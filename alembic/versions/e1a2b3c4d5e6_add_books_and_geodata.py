@@ -102,15 +102,13 @@ def upgrade() -> None:
         )
 
     if dialect == "postgresql":
-        book_condition_enum = postgresql.ENUM(
-            "new",
-            "like_new",
-            "good",
-            "acceptable",
-            name="bookcondition",
-            create_type=True,
-        )
-        book_condition_enum.create(conn, checkfirst=True)
+        op.execute("""
+            DO $$ BEGIN
+                CREATE TYPE bookcondition AS ENUM ('new', 'like_new', 'good', 'acceptable');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """)
         condition_type = sa.Enum(
             "new",
             "like_new",
