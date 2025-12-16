@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -9,7 +9,9 @@ from ..utils.datetime_utils import serialize_datetime, serialize_datetime_list
 from .base import Base
 from .types import UTCDateTime
 
-type JSONValue = str | int | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
+JSONValue: TypeAlias = (
+    str | int | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
+)
 
 
 class TransactionStatus(str, Enum):
