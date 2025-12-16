@@ -14,6 +14,9 @@ class ServiceType(str, Enum):
     USER_SERVICE = "user_service"
     PLATFORM_FEATURE = "platform_feature"
 
+    def __str__(self):
+        return self.value
+
 
 class Service(Base):
     __tablename__ = "services"
