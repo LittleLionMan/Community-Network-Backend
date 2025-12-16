@@ -25,29 +25,8 @@ def upgrade():
     dialect = bind.dialect.name
 
     if dialect == "postgresql":
-        # Konvertiere Spalten auf JSONB
-        op.alter_column(
-            "books",
-            "authors",
-            type_=postgresql.JSONB,
-            postgresql_using="authors::jsonb",
-        )
-        op.alter_column(
-            "books",
-            "categories",
-            type_=postgresql.JSONB,
-            postgresql_using="categories::jsonb",
-        )
-
-        # GIN-Indizes erstellen
-        op.create_index(
-            "idx_books_authors_gin", "books", ["authors"], postgresql_using="gin"
-        )
-        op.create_index(
-            "idx_books_categories_gin", "books", ["categories"], postgresql_using="gin"
-        )
+        pass
     else:
-        # SQLite und andere: Spalten bleiben JSON, normale Indexe
         op.create_index("idx_books_authors", "books", ["authors"])
         op.create_index("idx_books_categories", "books", ["categories"])
 
@@ -57,15 +36,7 @@ def downgrade():
     dialect = bind.dialect.name
 
     if dialect == "postgresql":
-        # Optional: Downgrade zurück zu JSON
-        op.alter_column(
-            "books", "authors", type_=sa.JSON, postgresql_using="authors::json"
-        )
-        op.alter_column(
-            "books", "categories", type_=sa.JSON, postgresql_using="categories::json"
-        )
-        op.drop_index("idx_books_authors_gin", table_name="books")
-        op.drop_index("idx_books_categories_gin", table_name="books")
+        pass
     else:
         op.drop_index("idx_books_authors", table_name="books")
         op.drop_index("idx_books_categories", table_name="books")
