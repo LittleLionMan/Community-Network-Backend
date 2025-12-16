@@ -73,7 +73,7 @@ def upgrade() -> None:
         sa.Column("isbn_10", sa.String(length=10), nullable=True),
         sa.Column(
             "authors",
-            sa.JSON() if dialect == "postgresql" else sa.Text(),
+            postgresql.JSONB() if dialect == "postgresql" else sa.Text(),
             nullable=False,
         ),
         sa.Column("publisher", sa.String(length=200), nullable=True),
@@ -84,7 +84,7 @@ def upgrade() -> None:
         sa.Column("page_count", sa.Integer(), nullable=True),
         sa.Column(
             "categories",
-            sa.JSON() if dialect == "postgresql" else sa.Text(),
+            postgresql.JSONB() if dialect == "postgresql" else sa.Text(),
             nullable=False,
         ),
     )
