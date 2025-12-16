@@ -23,7 +23,7 @@ def upgrade():
     # existierende Daten normalisieren
     op.execute("""
         UPDATE users
-        SET email_notifications_newsletter = 1
+        SET email_notifications_newsletter = TRUE
         WHERE email_notifications_newsletter IS NULL
            OR email_notifications_newsletter = FALSE
     """)
