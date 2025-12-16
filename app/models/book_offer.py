@@ -27,7 +27,13 @@ class BookOffer(BaseExchangeOffer):
     )
 
     condition: Mapped[BookCondition] = mapped_column(
-        SQLEnum(BookCondition, native_enum=False, length=20), nullable=False
+        SQLEnum(
+            BookCondition,
+            values_callable=lambda x: [e.value for e in x],
+            native_enum=True,
+            name="bookcondition",
+        ),
+        nullable=False,
     )
 
     user_comment: Mapped[str | None] = mapped_column(Text)

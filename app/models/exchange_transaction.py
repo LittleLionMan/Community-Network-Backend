@@ -40,7 +40,13 @@ class ExchangeTransaction(Base):
     )
 
     transaction_type: Mapped[TransactionType] = mapped_column(
-        String(30), nullable=False
+        SQLEnum(
+            TransactionType,
+            values_callable=lambda x: [e.value for e in x],
+            native_enum=True,
+            name="transactiontype",
+        ),
+        nullable=False,
     )
 
     offer_type: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -53,7 +59,15 @@ class ExchangeTransaction(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
-    status: Mapped[TransactionStatus] = mapped_column(String(20), nullable=False)
+    status: Mapped[TransactionStatus] = mapped_column(
+        SQLEnum(
+            TransactionStatus,
+            values_callable=lambda x: [e.value for e in x],
+            native_enum=True,
+            name="transactionstatus",
+        ),
+        nullable=False,
+    )
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
