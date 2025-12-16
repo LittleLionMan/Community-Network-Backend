@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, TypeAlias, cast
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..utils.datetime_utils import serialize_datetime, serialize_datetime_list
