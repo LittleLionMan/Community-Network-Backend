@@ -25,14 +25,14 @@ def upgrade():
         UPDATE users
         SET email_notifications_newsletter = 1
         WHERE email_notifications_newsletter IS NULL
-           OR email_notifications_newsletter = 0
+           OR email_notifications_newsletter = FALSE
     """)
 
     with op.batch_alter_table("users") as batch_op:
         batch_op.alter_column(
             "email_notifications_newsletter",
             nullable=False,
-            server_default=sa.text("1"),
+            server_default=sa.text("TRUE"),
         )
 
 
@@ -40,5 +40,5 @@ def downgrade():
     with op.batch_alter_table("users") as batch_op:
         batch_op.alter_column(
             "email_notifications_newsletter",
-            server_default=sa.text("0"),
+            server_default=sa.text("FALSE"),
         )
