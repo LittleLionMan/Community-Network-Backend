@@ -48,7 +48,7 @@ async def create_book_exchange_service():
             slug="buecherecke",
             title="Bücherecke",
             description="Tausche Bücher mit anderen Community-Mitgliedern in deiner Nähe. Entdecke neue Geschichten und gib deinen gelesenen Büchern ein zweites Leben.",
-            service_type=ServiceType.platform_feature,
+            service_type="platform_feature",
             user_id=admin_user.id,
             is_offering=True,
             is_active=True,
