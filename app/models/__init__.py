@@ -2,6 +2,7 @@ from .achievement import UserAchievement
 from .auth import EmailVerificationToken, PasswordResetToken, RefreshToken
 from .base import Base
 from .book import Book
+from .book_enrichment_bookmark import BookEnrichmentBookmark
 from .book_offer import BookCondition, BookOffer
 from .comment import Comment
 from .enums import ParticipationStatus, PollType
@@ -45,4 +46,5 @@ __all__ = [
     "BookCondition",
     "ExchangeTransaction",
     "UserAvailability",
+    "BookEnrichmentBookmark",
 ]

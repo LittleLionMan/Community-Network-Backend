@@ -7,8 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models.auth import EmailVerificationToken, PasswordResetToken
+from ..models.book_enrichment_bookmark import (
+    BookEnrichmentBookmark,
+)
 from ..models.exchange_transaction import ExchangeTransaction, TransactionStatus
 from ..services.auth import AuthService
+from ..services.book_metadata_enrichment_service import (
+    BookMetadataEnrichmentService,
+)
 from .monitoring import run_rate_limit_monitoring
 
 logger = logging.getLogger(__name__)
@@ -37,6 +43,9 @@ class BackgroundTaskManager:
 
         task3 = asyncio.create_task(self._transaction_cleanup_loop())
         self.tasks.append(task3)
+
+        task4 = asyncio.create_task(self._book_enrichment_loop())
+        self.tasks.append(task4)
 
         logger.info(f"Started {len(self.tasks)} background tasks")
 
@@ -87,7 +96,6 @@ class BackgroundTaskManager:
                 await asyncio.sleep(600)
 
     async def _transaction_cleanup_loop(self):
-        """Cleanup expired transactions every hour."""
         while self.running:
             try:
                 await self._cleanup_expired_transactions()
@@ -97,6 +105,31 @@ class BackgroundTaskManager:
             except Exception as e:
                 logger.error(f"Transaction cleanup error: {e}")
                 await asyncio.sleep(600)
+
+    async def _book_enrichment_loop(self):
+        while self.running:
+            try:
+                now = datetime.now(timezone.utc)
+
+                if now.hour in [4, 5]:
+                    last_run = await self._get_last_enrichment_run()
+
+                    if last_run is None or (now - last_run).days >= 1:
+                        logger.info("Starting daily book metadata enrichment...")
+                        await self._run_book_enrichment()
+
+                        await asyncio.sleep(3600)
+                    else:
+                        await asyncio.sleep(1800)
+                else:
+                    sleep_until_4am = self._calculate_sleep_until_4am(now)
+                    await asyncio.sleep(sleep_until_4am)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Book enrichment loop error: {e}")
+                await asyncio.sleep(3600)
 
     async def _cleanup_expired_tokens(self):
         async for db in get_db():
@@ -246,7 +279,6 @@ class BackgroundTaskManager:
         return count
 
     async def _unreserve_book_offer(self, db: AsyncSession, offer_id: int):
-        """Unreserve a book offer."""
         from ..models.book_offer import BookOffer
 
         result = await db.execute(select(BookOffer).where(BookOffer.id == offer_id))
@@ -256,6 +288,77 @@ class BackgroundTaskManager:
             book_offer.reserved_until = None
             book_offer.reserved_by_user_id = None
             book_offer.is_available = True
+
+    async def _get_last_enrichment_run(self) -> datetime | None:
+        async for db in get_db():
+            try:
+                query = (
+                    select(BookEnrichmentBookmark)
+                    .order_by(BookEnrichmentBookmark.last_run_at.desc())
+                    .limit(1)
+                )
+                result = await db.execute(query)
+                bookmark = result.scalar_one_or_none()
+
+                return bookmark.last_run_at if bookmark else None
+
+            except Exception as e:
+                logger.error(f"Error getting last enrichment run: {e}")
+                return None
+            finally:
+                await db.close()
+
+    async def _run_book_enrichment(self):
+        async for db in get_db():
+            try:
+                query = (
+                    select(BookEnrichmentBookmark)
+                    .order_by(BookEnrichmentBookmark.last_run_at.desc())
+                    .limit(1)
+                )
+                result = await db.execute(query)
+                last_bookmark = result.scalar_one_or_none()
+
+                last_processed_id = (
+                    last_bookmark.last_processed_book_id if last_bookmark else None
+                )
+
+                stats = await BookMetadataEnrichmentService.enrich_books(
+                    db, last_processed_id
+                )
+
+                new_bookmark = BookEnrichmentBookmark(
+                    last_processed_book_id=stats["last_processed_id"],
+                    last_run_at=datetime.now(timezone.utc),
+                    books_checked=stats["books_checked"],
+                    books_updated=stats["books_updated"],
+                    google_requests=stats["google_requests"],
+                    openlibrary_requests=stats["openlibrary_requests"],
+                    status="completed",
+                )
+
+                db.add(new_bookmark)
+                await db.commit()
+
+                logger.info(
+                    f"Book enrichment completed: {stats['books_updated']} books updated"
+                )
+
+            except Exception as e:
+                logger.error(f"Book enrichment error: {e}")
+                await db.rollback()
+            finally:
+                await db.close()
+
+    def _calculate_sleep_until_4am(self, now: datetime) -> int:
+        target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+
+        if now.hour >= 6:
+            target += timedelta(days=1)
+
+        sleep_seconds = (target - now).total_seconds()
+
+        return max(int(sleep_seconds), 60)
 
     async def run_maintenance_now(self):
         logger.info("Running manual maintenance...")
