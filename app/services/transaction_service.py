@@ -153,11 +153,6 @@ class TransactionService:
             "can_propose_time": can_propose_time,
             "can_confirm_time": can_confirm_time,
             "can_edit_address": can_edit_address,
-            "can_confirm_handover": can_update
-            and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
-            "can_cancel": can_update
-            and transaction.status
-            in (ModelTransactionStatus.PENDING, ModelTransactionStatus.TIME_CONFIRMED),
         }
 
     async def _update_message_transaction_data(
@@ -643,8 +638,16 @@ class TransactionService:
             )
 
         if user_id == transaction.requester_id:
+            if transaction.requester_confirmed_handover:
+                raise HTTPException(
+                    status_code=400, detail="You have already confirmed the handover"
+                )
             transaction.requester_confirmed_handover = True
         else:
+            if transaction.provider_confirmed_handover:
+                raise HTTPException(
+                    status_code=400, detail="You have already confirmed the handover"
+                )
             transaction.provider_confirmed_handover = True
 
         if (
@@ -685,6 +688,24 @@ class TransactionService:
         if not transaction.can_be_updated():
             raise HTTPException(
                 status_code=400, detail="Transaction cannot be cancelled"
+            )
+
+        if (
+            user_id == transaction.requester_id
+            and transaction.requester_confirmed_handover
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot cancel - you have already confirmed the handover",
+            )
+
+        if (
+            user_id == transaction.provider_id
+            and transaction.provider_confirmed_handover
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot cancel - you have already confirmed the handover",
             )
 
         transaction.status = ModelTransactionStatus.CANCELLED
@@ -1064,9 +1085,6 @@ class TransactionService:
             can_edit_address=is_provider
             and transaction.status == ModelTransactionStatus.PENDING
             and can_update,
-            can_confirm_handover=can_update
-            and transaction.status == ModelTransactionStatus.TIME_CONFIRMED,
-            can_cancel=can_update
-            and transaction.status
-            in (ModelTransactionStatus.PENDING, ModelTransactionStatus.TIME_CONFIRMED),
+            can_confirm_handover=False,
+            can_cancel=False,
         )
