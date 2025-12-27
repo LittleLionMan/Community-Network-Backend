@@ -7,6 +7,12 @@ from sqlalchemy import String, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.constants.book_classification import (
+    GENRES,
+    LANGUAGE_REVERSE_MAP,
+    LANGUAGES,
+    TOPICS,
+)
 from app.core.dependencies import get_current_user, get_optional_current_user
 from app.core.rate_limit_decorator import read_rate_limit
 from app.database import get_db
@@ -190,7 +196,8 @@ async def get_marketplace(
     search: Annotated[str | None, Query()] = None,
     condition: Annotated[list[BookCondition] | None, Query()] = None,
     language: Annotated[list[str] | None, Query()] = None,
-    category: Annotated[list[str] | None, Query()] = None,
+    genre: Annotated[list[str] | None, Query()] = None,
+    topic: Annotated[list[str] | None, Query()] = None,
     max_distance_km: Annotated[float | None, Query(ge=1, le=100)] = None,
     district: Annotated[list[str] | None, Query()] = None,
     has_comments: Annotated[bool | None, Query()] = False,
@@ -234,19 +241,6 @@ async def get_marketplace(
             )
         )
 
-    LANGUAGE_REVERSE_MAP = {
-        "deutsch": ["de", "ger", "german"],
-        "englisch": ["en", "eng", "english"],
-        "französisch": ["fr", "fre", "french"],
-        "spanisch": ["es", "spa", "spanish"],
-        "italienisch": ["it", "ita", "italian"],
-        "niederländisch": ["nl", "dut", "dutch"],
-        "portugiesisch": ["pt", "por", "portuguese"],
-        "russisch": ["ru", "rus", "russian"],
-        "chinesisch": ["zh", "chi", "chinese"],
-        "japanisch": ["ja", "jpn", "japanese"],
-    }
-
     if language:
         iso_codes = []
         for lang in language:
@@ -265,18 +259,27 @@ async def get_marketplace(
             func.lower(Book.language).in_([code.lower() for code in language])
         )
 
-    if category:
+    if genre:
         if not book_joined:
             query = query.join(Book)
             book_joined = True
 
-        category_filters = []
-        for cat in category:
-            category_filters.append(
-                func.lower(func.cast(Book.categories, String)).like(f"%{cat.lower()}%")
-            )
-        if category_filters:
-            query = query.where(or_(*category_filters))
+        genre_filters = []
+        for g in genre:
+            genre_filters.append(func.cast(Book.genres, String).like(f'%"{g}"%'))
+        if genre_filters:
+            query = query.where(or_(*genre_filters))
+
+    if topic:
+        if not book_joined:
+            query = query.join(Book)
+            book_joined = True
+
+        topic_filters = []
+        for t in topic:
+            topic_filters.append(func.cast(Book.topics, String).like(f'%"{t}"%'))
+        if topic_filters:
+            query = query.where(or_(*topic_filters))
 
     if district:
         district_filters = []
@@ -393,7 +396,41 @@ async def get_stats(
 async def get_filter_options(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User | None, Depends(get_optional_current_user)],
+    lang: Annotated[str, Query()] = "de",
 ):
+    genres_with_books_query = select(
+        func.jsonb_array_elements_text(Book.genres).label("genre")
+    ).distinct()
+    genres_with_books_result = await db.execute(genres_with_books_query)
+    active_genre_slugs = {row[0] for row in genres_with_books_result.all()}
+
+    genres = [
+        {
+            "slug": slug,
+            "name": data[f"name_{lang}"],
+            "icon": data.get("icon"),
+        }
+        for slug, data in GENRES.items()
+        if slug in active_genre_slugs
+    ]
+    genres.sort(key=lambda x: x["name"])
+
+    topics_with_books_query = select(
+        func.jsonb_array_elements_text(Book.topics).label("topic")
+    ).distinct()
+    topics_with_books_result = await db.execute(topics_with_books_query)
+    active_topic_slugs = {row[0] for row in topics_with_books_result.all()}
+
+    topics = [
+        {
+            "slug": slug,
+            "name": data[f"name_{lang}"],
+        }
+        for slug, data in TOPICS.items()
+        if slug in active_topic_slugs
+    ]
+    topics.sort(key=lambda x: x["name"])
+
     districts_query = (
         select(BookOffer.location_district)
         .where(BookOffer.location_district.isnot(None), BookOffer.is_available)
@@ -402,68 +439,21 @@ async def get_filter_options(
     districts_result = await db.execute(districts_query)
     districts = sorted([d for d in districts_result.scalars().all() if d and d.strip()])
 
-    categories_query = select(Book.categories).distinct()
-    categories_result = await db.execute(categories_query)
-
-    categories_map = {}
-    for cat_list in categories_result.scalars().all():
-        if cat_list and isinstance(cat_list, list):
-            for cat in cat_list:
-                if cat and cat.strip():
-                    cat_lower = cat.strip().lower()
-                    if cat_lower not in categories_map:
-                        normalized = cat.strip().title()
-                        categories_map[cat_lower] = normalized
-
-    categories = sorted(list(set(categories_map.values())))
-
     languages_query = select(Book.language).where(Book.language.isnot(None)).distinct()
     languages_result = await db.execute(languages_query)
-
-    LANGUAGE_MAP = {
-        "de": "Deutsch",
-        "ger": "Deutsch",
-        "german": "Deutsch",
-        "en": "Englisch",
-        "eng": "Englisch",
-        "english": "Englisch",
-        "fr": "Französisch",
-        "fre": "Französisch",
-        "french": "Französisch",
-        "es": "Spanisch",
-        "spa": "Spanisch",
-        "spanish": "Spanisch",
-        "it": "Italienisch",
-        "ita": "Italienisch",
-        "italian": "Italienisch",
-        "nl": "Niederländisch",
-        "dut": "Niederländisch",
-        "dutch": "Niederländisch",
-        "pt": "Portugiesisch",
-        "por": "Portugiesisch",
-        "portuguese": "Portugiesisch",
-        "ru": "Russisch",
-        "rus": "Russisch",
-        "russian": "Russisch",
-        "zh": "Chinesisch",
-        "chi": "Chinesisch",
-        "chinese": "Chinesisch",
-        "ja": "Japanisch",
-        "jpn": "Japanisch",
-        "japanese": "Japanisch",
-    }
 
     language_set = set()
     for lang_code in languages_result.scalars().all():
         if lang_code and lang_code.strip():
             lang_lower = lang_code.strip().lower()
-            readable = LANGUAGE_MAP.get(lang_lower, lang_code.strip().capitalize())
+            readable = LANGUAGES.get(lang_lower, lang_code.strip().capitalize())
             language_set.add(readable)
 
     languages = sorted(list(language_set))
 
     return {
+        "genres": genres,
+        "topics": topics,
         "districts": districts,
-        "categories": categories,
         "languages": languages,
     }

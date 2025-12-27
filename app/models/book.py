@@ -18,7 +18,8 @@ class Book(BaseExchangeItem):
     published_date: Mapped[str | None] = mapped_column(String(50))
     language: Mapped[str] = mapped_column(String(10), default="de", nullable=False)
     page_count: Mapped[int | None] = mapped_column(Integer)
-    categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    genres: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    topics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
     offers: Mapped[list["BookOffer"]] = relationship(
         "BookOffer", back_populates="book", cascade="all, delete-orphan"
@@ -27,5 +28,6 @@ class Book(BaseExchangeItem):
     __table_args__ = (
         Index("idx_books_title", "title"),
         Index("idx_books_authors_gin", "authors", postgresql_using="gin"),
-        Index("idx_books_categories_gin", "categories", postgresql_using="gin"),
+        Index("idx_books_genres_gin", "genres", postgresql_using="gin"),
+        Index("idx_books_topics_gin", "topics", postgresql_using="gin"),
     )

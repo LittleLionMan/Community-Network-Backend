@@ -8,8 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.telegram import TelegramNotifier
 from app.models.book import Book
 from app.models.book_enrichment_bookmark import BookLastChecked
+from app.services.classification_mapping_service import ClassificationMappingService
 from app.services.google_books_client import BookMetadata, GoogleBooksClient
 from app.services.open_library_client import OpenLibraryClient
+from app.services.wikidata_client import WikidataClient
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,8 @@ class EnrichmentStats(TypedDict):
     books_skipped_recently_checked: int
     google_requests: int
     openlibrary_requests: int
+    genres_mapped: int
+    topics_mapped: int
     last_processed_id: int | None
 
 
@@ -37,6 +41,8 @@ class BookMetadataEnrichmentService:
             "books_skipped_recently_checked": 0,
             "google_requests": 0,
             "openlibrary_requests": 0,
+            "genres_mapped": 0,
+            "topics_mapped": 0,
             "last_processed_id": last_processed_id,
         }
 
@@ -82,8 +88,11 @@ class BookMetadataEnrichmentService:
             updated = False
             updated_fields: list[str] = []
 
+            google_metadata = None
+            ol_metadata = None
+
             if stats["google_requests"] < cls.MAX_REQUESTS_PER_API:
-                updated, fields = await cls._try_enrich_from_google(
+                updated, fields, google_metadata = await cls._try_enrich_from_google(
                     db, book, missing_fields
                 )
                 stats["google_requests"] += 1
@@ -96,9 +105,11 @@ class BookMetadataEnrichmentService:
                 missing_fields
                 and stats["openlibrary_requests"] < cls.MAX_REQUESTS_PER_API
             ):
-                ol_updated, ol_fields = await cls._try_enrich_from_openlibrary(
-                    db, book, missing_fields
-                )
+                (
+                    ol_updated,
+                    ol_fields,
+                    ol_metadata,
+                ) = await cls._try_enrich_from_openlibrary(db, book, missing_fields)
                 stats["openlibrary_requests"] += 1
 
                 if ol_updated:
@@ -108,6 +119,50 @@ class BookMetadataEnrichmentService:
             await cls._update_last_checked(db, book.id)
 
             if updated and updated_fields:
+                wikidata_topics = []
+                try:
+                    wikidata_topics = await WikidataClient.search_topics_by_isbn(
+                        book.isbn_13
+                    )
+                except Exception as e:
+                    logger.error(f"Wikidata error for book {book.id}: {e}")
+
+                ddc_classes = []
+                raw_categories = []
+                raw_subjects = []
+
+                if google_metadata:
+                    ddc_classes.extend(google_metadata.get("ddc_classes", []))
+                    raw_categories.extend(google_metadata.get("categories", []))
+
+                if ol_metadata:
+                    raw_subjects.extend(ol_metadata.get("subjects", []))
+                    raw_categories.extend(ol_metadata.get("categories", []))
+
+                try:
+                    mapping_result = (
+                        ClassificationMappingService.map_book_classification(
+                            ddc_classes=ddc_classes,
+                            raw_categories=raw_categories,
+                            raw_subjects=raw_subjects,
+                            wikidata_topics=wikidata_topics,
+                        )
+                    )
+
+                    if mapping_result["genres"]:
+                        book.genres = mapping_result["genres"]
+                        updated_fields.append("genres")
+                        stats["genres_mapped"] += 1
+
+                    if mapping_result["topics"]:
+                        book.topics = mapping_result["topics"]
+                        updated_fields.append("topics")
+                        stats["topics_mapped"] += 1
+
+                except Exception as e:
+                    logger.error(
+                        f"Classification mapping error for book {book.id}: {e}"
+                    )
                 await db.commit()
                 stats["books_updated"] += 1
 
@@ -213,34 +268,36 @@ class BookMetadataEnrichmentService:
     @classmethod
     async def _try_enrich_from_google(
         cls, db: AsyncSession, book: Book, missing_fields: list[str]
-    ) -> tuple[bool, list[str]]:
+    ) -> tuple[bool, list[str], BookMetadata | None]:
         try:
             metadata = await GoogleBooksClient.search_by_isbn(book.isbn_13)
 
             if not metadata:
-                return False, []
+                return False, [], None
 
-            return cls._apply_metadata(book, metadata, missing_fields)
+            updated, fields = cls._apply_metadata(book, metadata, missing_fields)
+            return updated, fields, metadata
 
         except Exception as e:
             logger.error(f"Google Books API error for book {book.id}: {e}")
-            return False, []
+            return False, [], None
 
     @classmethod
     async def _try_enrich_from_openlibrary(
         cls, db: AsyncSession, book: Book, missing_fields: list[str]
-    ) -> tuple[bool, list[str]]:
+    ) -> tuple[bool, list[str], BookMetadata | None]:
         try:
             metadata = await OpenLibraryClient.search_by_isbn(book.isbn_13)
 
             if not metadata:
-                return False, []
+                return False, [], None
 
-            return cls._apply_metadata(book, metadata, missing_fields)
+            updated, fields = cls._apply_metadata(book, metadata, missing_fields)
+            return updated, fields, metadata
 
         except Exception as e:
             logger.error(f"Open Library API error for book {book.id}: {e}")
-            return False, []
+            return False, [], None
 
     @classmethod
     def _apply_metadata(

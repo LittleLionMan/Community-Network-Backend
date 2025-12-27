@@ -16,6 +16,7 @@ from app.schemas.book_offer import (
     BookUserComment,
 )
 from app.schemas.user import UserSummary
+from app.services.classification_mapping_service import ClassificationMappingService
 from app.services.file_service import FileUploadService
 from app.services.google_books_client import GoogleBooksClient
 from app.services.location_service import LocationService
@@ -98,6 +99,15 @@ class BookService:
             logger.warning(f"No metadata found for ISBN: {cleaned_isbn}")
             return None
 
+        mapping_result = ClassificationMappingService.map_book_classification_immediate(
+            metadata
+        )
+
+        logger.info(
+            f"Mapped book to {len(mapping_result['genres'])} genres "
+            f"and {len(mapping_result['topics'])} topics"
+        )
+
         cover_url = metadata.get("cover_image_url")
         local_cover_url = None
 
@@ -129,7 +139,8 @@ class BookService:
             published_date=metadata.get("published_date"),
             language=metadata.get("language", "de"),
             page_count=metadata.get("page_count"),
-            categories=metadata.get("categories", []),
+            genres=mapping_result["genres"],
+            topics=mapping_result["topics"],
             cover_image_url=local_cover_url or cover_url,
             thumbnail_url=metadata.get("thumbnail_url"),
         )
@@ -232,6 +243,33 @@ class BookService:
         if not book.thumbnail_url and metadata.get("thumbnail_url"):
             book.thumbnail_url = str(metadata["thumbnail_url"])
             updated = True
+
+        if not book.genres or not book.topics:
+            try:
+                mapping_result = (
+                    ClassificationMappingService.map_book_classification_immediate(
+                        metadata
+                    )
+                )
+
+                if not book.genres and mapping_result["genres"]:
+                    book.genres = mapping_result["genres"]
+                    updated = True
+                    logger.info(
+                        f"Added genres to existing book {book.title}: "
+                        f"{', '.join(book.genres)}"
+                    )
+
+                if not book.topics and mapping_result["topics"]:
+                    book.topics = mapping_result["topics"]
+                    updated = True
+                    logger.info(
+                        f"Added topics to existing book {book.title}: "
+                        f"{', '.join(book.topics)}"
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to map genres/topics for existing book: {e}")
 
         return updated
 
