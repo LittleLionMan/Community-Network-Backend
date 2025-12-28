@@ -11,7 +11,6 @@ from app.models.book_enrichment_bookmark import BookLastChecked
 from app.services.classification_mapping_service import ClassificationMappingService
 from app.services.google_books_client import BookMetadata, GoogleBooksClient
 from app.services.open_library_client import OpenLibraryClient
-from app.services.wikidata_client import WikidataClient
 
 logger = logging.getLogger(__name__)
 
@@ -118,51 +117,43 @@ class BookMetadataEnrichmentService:
 
             await cls._update_last_checked(db, book.id)
 
-            if updated and updated_fields:
-                wikidata_topics = []
-                try:
-                    wikidata_topics = await WikidataClient.search_topics_by_isbn(
-                        book.isbn_13
-                    )
-                except Exception as e:
-                    logger.error(f"Wikidata error for book {book.id}: {e}")
-
-                ddc_classes = []
+            if "genres" in missing_fields or "topics" in missing_fields:
                 raw_categories = []
                 raw_subjects = []
 
                 if google_metadata:
-                    ddc_classes.extend(google_metadata.get("ddc_classes", []))
                     raw_categories.extend(google_metadata.get("categories", []))
 
                 if ol_metadata:
                     raw_subjects.extend(ol_metadata.get("subjects", []))
-                    raw_categories.extend(ol_metadata.get("categories", []))
 
-                try:
-                    mapping_result = (
-                        ClassificationMappingService.map_book_classification(
-                            ddc_classes=ddc_classes,
-                            raw_categories=raw_categories,
-                            raw_subjects=raw_subjects,
-                            wikidata_topics=wikidata_topics,
+                if raw_categories or raw_subjects:
+                    try:
+                        mapping_result = (
+                            ClassificationMappingService.map_book_classification(
+                                raw_categories=raw_categories,
+                                raw_subjects=raw_subjects,
+                            )
                         )
-                    )
 
-                    if mapping_result["genres"]:
-                        book.genres = mapping_result["genres"]
-                        updated_fields.append("genres")
-                        stats["genres_mapped"] += 1
+                        if "genres" in missing_fields and mapping_result["genres"]:
+                            book.genres = mapping_result["genres"]
+                            updated_fields.append("genres")
+                            stats["genres_mapped"] += 1
+                            updated = True
 
-                    if mapping_result["topics"]:
-                        book.topics = mapping_result["topics"]
-                        updated_fields.append("topics")
-                        stats["topics_mapped"] += 1
+                        if "topics" in missing_fields and mapping_result["topics"]:
+                            book.topics = mapping_result["topics"]
+                            updated_fields.append("topics")
+                            stats["topics_mapped"] += 1
+                            updated = True
 
-                except Exception as e:
-                    logger.error(
-                        f"Classification mapping error for book {book.id}: {e}"
-                    )
+                    except Exception as e:
+                        logger.error(
+                            f"Classification mapping error for book {book.id}: {e}"
+                        )
+
+            if updated and updated_fields:
                 await db.commit()
                 stats["books_updated"] += 1
 
@@ -260,8 +251,10 @@ class BookMetadataEnrichmentService:
             missing.append("language")
         if not book.page_count:
             missing.append("page_count")
-        if not book.categories or len(book.categories) == 0:
-            missing.append("categories")
+        if not book.genres or len(book.genres) == 0:
+            missing.append("genres")
+        if not book.topics or len(book.topics) == 0:
+            missing.append("topics")
 
         return missing
 
@@ -349,11 +342,6 @@ class BookMetadataEnrichmentService:
         if "page_count" in missing_fields and page_count:
             book.page_count = page_count
             updated_fields.append("page_count")
-
-        categories = metadata.get("categories")
-        if "categories" in missing_fields and categories and len(categories) > 0:
-            book.categories = categories
-            updated_fields.append("categories")
 
         return len(updated_fields) > 0, updated_fields
 

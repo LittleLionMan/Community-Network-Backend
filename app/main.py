@@ -558,6 +558,46 @@ async def trigger_cleanup(
         return {"message": f"Cleanup failed: {str(e)}"}
 
 
+@app.post("/api/admin/tasks/run-book-enrichment")
+async def run_book_enrichment(
+    request: Request,
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    max_books: int = 10,
+):
+    try:
+        SecurityLogger.log_admin_action(
+            request,
+            admin_user_id=current_admin.id,
+            action="run_book_enrichment",
+            details={"max_books": max_books},
+        )
+
+        from app.services.book_metadata_enrichment_service import (
+            BookMetadataEnrichmentService,
+        )
+
+        stats = await BookMetadataEnrichmentService.enrich_books(
+            db=db, last_processed_id=None
+        )
+
+        return {
+            "message": "Book enrichment completed",
+            "stats": stats,
+            "admin_user": current_admin.display_name,
+        }
+
+    except Exception as e:
+        logger.error(f"Book enrichment failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "message": "Book enrichment failed",
+                "error": str(e),
+            },
+        )
+
+
 @app.post("/api/admin/newsletter/send")
 async def send_newsletter(
     request: Request,
