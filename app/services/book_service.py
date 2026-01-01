@@ -1,7 +1,7 @@
 import logging
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -335,12 +335,20 @@ class BookService:
         logger.info(f"Created book offer ID {new_offer.id} for user {user_id}")
         return BookOfferRead.from_db(new_offer, all_user_comments=all_comments)
 
-    async def get_my_offers(self, user_id: int) -> list[BookOfferRead]:
-        query = (
+    async def get_my_offers(
+        self, user_id: int, skip: int = 0, limit: int = 20
+    ) -> tuple[list[BookOfferRead], int]:
+        base_query = (
             select(BookOffer)
             .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
             .where(BookOffer.owner_id == user_id)
-            .order_by(BookOffer.created_at.desc())
+        )
+
+        count_query = select(func.count()).select_from(base_query.subquery())
+        total = await self.db.scalar(count_query) or 0
+
+        query = (
+            base_query.order_by(BookOffer.created_at.desc()).offset(skip).limit(limit)
         )
 
         result = await self.db.execute(query)
@@ -353,7 +361,7 @@ class BookService:
                 BookOfferRead.from_db(offer, all_user_comments=all_comments)
             )
 
-        return offer_reads
+        return offer_reads, total
 
     async def update_offer(
         self, offer_id: int, user_id: int, data: BookOfferUpdate

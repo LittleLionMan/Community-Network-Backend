@@ -74,6 +74,8 @@ async def get_my_offers(
     status_filter: Annotated[
         str | None, Query(description="Filter: active, reserved, completed")
     ] = None,
+    skip: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
     query = (
         select(BookOffer)
@@ -94,7 +96,10 @@ async def get_my_offers(
             BookOffer.reserved_by_user_id.is_(None),
         )
 
-    query = query.order_by(BookOffer.created_at.desc())
+    count_query = select(func.count()).select_from(query.subquery())
+    total = await db.scalar(count_query) or 0
+
+    query = query.order_by(BookOffer.created_at.desc()).offset(skip).limit(limit)
 
     result = await db.execute(query)
     offers = result.scalars().all()
@@ -105,7 +110,13 @@ async def get_my_offers(
         all_comments = await book_service._get_all_user_comments(offer.book_id)
         offer_reads.append(BookOfferRead.from_db(offer, all_user_comments=all_comments))
 
-    return offer_reads
+    return {
+        "items": offer_reads,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total,
+    }
 
 
 @router.put("/offers/{offer_id}")
