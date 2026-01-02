@@ -11,6 +11,7 @@ from ..models.book_enrichment_bookmark import (
     BookEnrichmentBookmark,
 )
 from ..models.exchange_transaction import ExchangeTransaction, TransactionStatus
+from ..models.message import Message
 from ..services.auth import AuthService
 from ..services.book_metadata_enrichment_service import (
     BookMetadataEnrichmentService,
@@ -224,6 +225,8 @@ class BackgroundTaskManager:
                 transaction_id=transaction.id,
             )
 
+            await self._update_transaction_message_status(db, transaction)
+
             count += 1
 
         if count > 0:
@@ -264,6 +267,8 @@ class BackgroundTaskManager:
                 transaction_id=transaction.id,
             )
 
+            await self._update_transaction_message_status(db, transaction)
+
             logger.info(
                 f"Expired unconfirmed transaction {transaction.id} - "
                 f"meeting was at {transaction.confirmed_time}, "
@@ -277,6 +282,33 @@ class BackgroundTaskManager:
             await db.commit()
 
         return count
+
+    async def _update_transaction_message_status(
+        self, db: AsyncSession, transaction: ExchangeTransaction
+    ):
+        result = await db.execute(
+            select(Message).where(Message.id == transaction.message_id)
+        )
+        message = result.scalar_one_or_none()
+
+        if not message or not message.transaction_data:
+            logger.warning(
+                f"Could not find message or transaction_data for transaction {transaction.id}"
+            )
+            return
+
+        transaction_data = dict(message.transaction_data)
+        transaction_data["status"] = transaction.status.value
+        transaction_data["is_expired"] = True
+        transaction_data["can_propose_time"] = False
+        transaction_data["can_confirm_time"] = False
+        transaction_data["can_edit_address"] = False
+        transaction_data["can_confirm_handover"] = False
+        transaction_data["can_cancel"] = False
+
+        message.transaction_data = transaction_data
+
+        await db.flush()
 
     async def _unreserve_book_offer(self, db: AsyncSession, offer_id: int):
         from ..models.book_offer import BookOffer

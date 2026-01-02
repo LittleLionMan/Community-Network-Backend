@@ -38,6 +38,7 @@ from app.services.location_service import LocationService
 from app.services.message_service import MessageService
 from app.services.notification_service import NotificationService
 from app.services.websocket_service import websocket_manager
+from app.utils.condition_translations import translate_condition
 from app.utils.datetime_utils import serialize_datetime, serialize_datetime_list
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ class TransactionService:
             "offer_type": transaction.offer_type,
             "offer_title": offer_title,
             "offer_thumbnail_url": offer_thumbnail,
-            "offer_condition": offer_condition,
+            "offer_condition": translate_condition(offer_condition),
             "requester_id": transaction.requester_id,
             "requester_display_name": requester_name,
             "requester_profile_image_url": requester_avatar,
@@ -1053,7 +1054,7 @@ class TransactionService:
             offer=TransactionOfferInfo(
                 title=offer_info["title"],
                 thumbnail_url=offer_info["thumbnail_url"],
-                condition=offer_info["condition"],
+                condition=translate_condition(offer_info["condition"]),
             ),
             requester=TransactionParticipantInfo(
                 id=transaction.requester_id,
