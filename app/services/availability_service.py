@@ -188,3 +188,91 @@ class AvailabilityService:
         conflicts = result.scalars().first()
 
         return conflicts is None
+
+    @staticmethod
+    async def block_time_for_event(
+        db: AsyncSession,
+        event_id: int,
+        user_id: int,
+        start_time: datetime,
+        end_time: datetime,
+        title: str,
+    ) -> UserAvailability:
+        blocked_slot = UserAvailability(
+            user_id=user_id,
+            slot_type="blocked",
+            specific_date=start_time.date(),
+            specific_start=start_time,
+            specific_end=end_time,
+            source="event",
+            source_id=event_id,
+            title=title,
+            is_active=True,
+        )
+
+        db.add(blocked_slot)
+        await db.commit()
+        await db.refresh(blocked_slot)
+        return blocked_slot
+
+    @staticmethod
+    async def remove_event_blocks(
+        db: AsyncSession,
+        event_id: int,
+    ) -> None:
+        query = select(UserAvailability).where(
+            and_(
+                UserAvailability.source == "event",
+                UserAvailability.source_id == event_id,
+            )
+        )
+        result = await db.execute(query)
+        slots = result.scalars().all()
+
+        for slot in slots:
+            await db.delete(slot)
+
+        await db.commit()
+
+    @staticmethod
+    async def get_event_conflicts(
+        db: AsyncSession,
+        user_id: int,
+        check_start: datetime,
+        check_end: datetime,
+        exclude_event_id: int | None = None,
+    ) -> list[UserAvailability]:
+        query = select(UserAvailability).where(
+            and_(
+                UserAvailability.user_id == user_id,
+                UserAvailability.is_active,
+                UserAvailability.slot_type == "blocked",
+                UserAvailability.specific_start.is_not(None),
+                UserAvailability.specific_end.is_not(None),
+                or_(
+                    and_(
+                        UserAvailability.specific_start <= check_start,
+                        UserAvailability.specific_end > check_start,
+                    ),
+                    and_(
+                        UserAvailability.specific_start < check_end,
+                        UserAvailability.specific_end >= check_end,
+                    ),
+                    and_(
+                        UserAvailability.specific_start >= check_start,
+                        UserAvailability.specific_end <= check_end,
+                    ),
+                ),
+            )
+        )
+
+        if exclude_event_id is not None:
+            query = query.where(
+                or_(
+                    UserAvailability.source != "event",
+                    UserAvailability.source_id != exclude_event_id,
+                )
+            )
+
+        result = await db.execute(query)
+        return list(result.scalars().all())

@@ -1,39 +1,42 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     HTTPException,
-    status,
     Query,
-    BackgroundTasks,
     Request,
+    status,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from datetime import datetime, timezone
 
-from app.database import get_db
-from app.models.event import Event, EventCategory, EventParticipation
-from app.models.user import User
-from app.schemas.event import (
-    EventCreate,
-    EventRead,
-    EventUpdate,
-    EventSummary,
-    EventParticipationRead,
-    EventCategoryRead,
-)
-from app.schemas.user import UserSummary
-from app.schemas.common import ErrorResponse
 from app.core.dependencies import (
-    get_current_user,
     get_current_admin_user,
+    get_current_user,
     get_optional_current_user,
 )
 from app.core.rate_limit_decorator import event_create_rate_limit, read_rate_limit
+from app.database import get_db
 from app.models.enums import ParticipationStatus
-from app.services.event_service import EventService
+from app.models.event import Event, EventCategory, EventParticipation
+from app.models.user import User
+from app.schemas.common import ErrorResponse
+from app.schemas.event import (
+    EventCategoryRead,
+    EventCreate,
+    EventParticipationRead,
+    EventRead,
+    EventSummary,
+    EventUpdate,
+)
+from app.schemas.user import UserSummary
+from app.services.availability_service import AvailabilityService
 from app.services.civic_service import CivicService
+from app.services.event_service import EventService
+from app.services.notification_service import NotificationService
 
 router = APIRouter()
 
@@ -362,7 +365,7 @@ async def update_event(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Event).where(Event.id == event_id, Event.is_active == True)
+        select(Event).where(Event.id == event_id, Event.is_active)
     )
     event = result.scalar_one_or_none()
 
@@ -416,8 +419,14 @@ async def delete_event(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Event).where(Event.id == event_id, Event.is_active == True)
+        select(Event)
+        .where(Event.id == event_id, Event.is_active)
+        .options(
+            selectinload(Event.creator),
+            selectinload(Event.participations).selectinload(EventParticipation.user),
+        )
     )
+
     event = result.scalar_one_or_none()
 
     if not event:
@@ -431,6 +440,25 @@ async def delete_event(
             detail="Not authorized to delete this event",
         )
 
+    registered_participants = [
+        p for p in event.participations if p.status == ParticipationStatus.REGISTERED
+    ]
+    participant_ids = [p.user_id for p in registered_participants]
+
+    if participant_ids:
+        await NotificationService.create_event_cancelled_notifications(
+            db=db,
+            event_id=event.id,
+            event_title=event.title,
+            creator=event.creator,
+            participant_ids=participant_ids,
+        )
+
+    await AvailabilityService.remove_event_blocks(
+        db=db,
+        event_id=event_id,
+    )
+
     event.is_active = False
     await db.commit()
 
@@ -439,14 +467,6 @@ async def delete_event(
     "/{event_id}/join",
     response_model=EventParticipationRead,
     status_code=status.HTTP_201_CREATED,
-    responses={
-        400: {
-            "model": ErrorResponse,
-            "description": "Cannot join event (full, past, already joined)",
-        },
-        401: {"model": ErrorResponse, "description": "Authentication required"},
-        404: {"model": ErrorResponse, "description": "Event not found"},
-    },
 )
 async def join_event(
     event_id: int,
@@ -457,11 +477,10 @@ async def join_event(
 
     result = await db.execute(
         select(Event)
-        .where(Event.id == event_id, Event.is_active == True)
+        .where(Event.id == event_id, Event.is_active)
         .options(selectinload(Event.participations))
     )
     event = result.scalar_one_or_none()
-
     if not event:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
@@ -470,6 +489,29 @@ async def join_event(
     can_join, reason = await event_service.can_join_event(event, current_user)
     if not can_join:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    event_end = event.end_datetime or (event.start_datetime + timedelta(hours=2))
+    conflicts = await AvailabilityService.get_event_conflicts(
+        db=db,
+        user_id=current_user.id,
+        check_start=event.start_datetime,
+        check_end=event_end,
+    )
+
+    if conflicts:
+        conflict_details = [
+            {
+                "title": c.title or "Blockierter Zeitraum",
+                "start": c.specific_start.isoformat() if c.specific_start else None,
+                "end": c.specific_end.isoformat() if c.specific_end else None,
+                "type": c.slot_type,
+            }
+            for c in conflicts
+        ]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Du hast bereits andere Termine zu dieser Zeit: {conflict_details[0]['title']}",
+        )
 
     result = await db.execute(
         select(EventParticipation).where(
@@ -486,6 +528,16 @@ async def join_event(
             await db.refresh(
                 existing_participation, ["user", "status_updated_at", "registered_at"]
             )
+
+            await AvailabilityService.block_time_for_event(
+                db=db,
+                event_id=event_id,
+                user_id=current_user.id,
+                start_time=event.start_datetime,
+                end_time=event_end,
+                title=f"Event: {event.title}",
+            )
+
             return EventParticipationRead.model_validate(
                 existing_participation, from_attributes=True
             )
@@ -495,10 +547,18 @@ async def join_event(
         user_id=current_user.id,
         status=ParticipationStatus.REGISTERED,
     )
-
     db.add(participation)
     await db.commit()
     await db.refresh(participation, ["user", "status_updated_at", "registered_at"])
+
+    await AvailabilityService.block_time_for_event(
+        db=db,
+        event_id=event_id,
+        user_id=current_user.id,
+        start_time=event.start_datetime,
+        end_time=event_end,
+        title=f"Event: {event.title}",
+    )
 
     return EventParticipationRead.model_validate(participation, from_attributes=True)
 
@@ -533,6 +593,10 @@ async def leave_event(
         )
 
     participation.status = ParticipationStatus.CANCELLED
+    await AvailabilityService.remove_event_blocks(
+        db=db,
+        event_id=event_id,
+    )
     await db.commit()
 
 
@@ -543,7 +607,7 @@ async def leave_event(
 )
 async def get_event_participants(event_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Event).where(Event.id == event_id, Event.is_active == True)
+        select(Event).where(Event.id == event_id, Event.is_active)
     )
     event = result.scalar_one_or_none()
 
@@ -581,7 +645,7 @@ async def get_my_created_events(
 ):
     result = await db.execute(
         select(Event)
-        .where(Event.creator_id == current_user.id, Event.is_active == True)
+        .where(Event.creator_id == current_user.id, Event.is_active)
         .options(
             selectinload(Event.creator),
             selectinload(Event.category),
@@ -648,7 +712,7 @@ async def get_my_joined_events(
             EventParticipation.status == ParticipationStatus.REGISTERED,
         )
         .join(Event)
-        .where(Event.is_active == True)
+        .where(Event.is_active)
         .options(
             selectinload(EventParticipation.user),
             selectinload(EventParticipation.event).selectinload(Event.category),

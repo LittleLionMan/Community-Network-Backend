@@ -274,6 +274,60 @@ class NotificationService:
         return notification
 
     @staticmethod
+    async def create_event_cancelled_notifications(
+        db: AsyncSession,
+        event_id: int,
+        event_title: str,
+        creator: User,
+        participant_ids: list[int],
+    ):
+        notifications: list[Notification] = []
+
+        for user_id in participant_ids:
+            if user_id == creator.id:
+                continue
+
+            result = await db.execute(
+                select(User).where(User.id == user_id, User.is_active)
+            )
+            user = result.scalar_one_or_none()
+
+            if not user:
+                continue
+
+            notification_data = {
+                "event_id": event_id,
+                "event_title": event_title,
+                "creator": UserSummary.model_validate(creator).model_dump(mode="json"),
+            }
+
+            notification = Notification(
+                user_id=user_id,
+                type="event_cancelled",
+                data=notification_data,
+            )
+
+            db.add(notification)
+            await db.flush()
+            await db.refresh(notification)
+
+            notifications.append(notification)
+
+            await websocket_manager.send_to_user(
+                user_id,
+                {
+                    "type": "event_cancelled",
+                    "notification_id": notification.id,
+                    "event_id": event_id,
+                    "event_title": event_title,
+                    "message": f"Das Event '{event_title}' wurde abgesagt. Bei Rückfragen wende dich an {creator.display_name}.",
+                    "creator": notification_data["creator"],
+                },
+            )
+
+        return notifications
+
+    @staticmethod
     async def delete_notifications_for_post(db: AsyncSession, post_id: int):
         from sqlalchemy import delete
 
