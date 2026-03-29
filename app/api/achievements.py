@@ -1,12 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.dependencies import get_current_user
+from app.core.logging import SecurityLogger
 from app.database import get_db
 from app.models.achievement import UserAchievement
-from app.models.user import User
 from app.models.event import Event
+from app.models.user import User
 from app.schemas.achievement import (
     AchievementCreate,
     AchievementRead,
@@ -14,8 +17,8 @@ from app.schemas.achievement import (
     LeaderboardResponse,
     UserAchievementStats,
 )
-from app.core.dependencies import get_current_user
-from app.core.logging import SecurityLogger
+from app.utils.auth_utils import check_ownership
+from app.utils.db_utils import get_or_404
 
 router = APIRouter()
 
@@ -65,11 +68,11 @@ async def create_achievement(
             status_code=status.HTTP_403_FORBIDDEN, detail="No permission"
         )
 
-    result = await db.execute(select(User).where(User.id == achievement_data.user_id))
-    if not result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+    await get_or_404(
+        db,
+        select(User).where(User.id == achievement_data.user_id),
+        detail="User not found",
+    )
 
     if achievement_data.reference_type and achievement_data.reference_id:
         existing = await db.execute(
@@ -118,18 +121,18 @@ async def delete_achievement(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(UserAchievement).where(UserAchievement.id == achievement_id)
+    achievement = await get_or_404(
+        db,
+        select(UserAchievement).where(UserAchievement.id == achievement_id),
+        detail="Not found",
     )
-    achievement = result.scalar_one_or_none()
-
-    if not achievement:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-
-    if not current_user.is_admin and achievement.awarded_by_user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
-        )
+    check_ownership(
+        achievement,
+        current_user,
+        owner_field="awarded_by_user_id",
+        action="delete",
+        entity_name="achievement",
+    )
 
     _ = await db.execute(
         delete(UserAchievement).where(UserAchievement.id == achievement_id)

@@ -1,35 +1,103 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Cookie
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from fastapi.responses import HTMLResponse
 from typing import Annotated
 
-from app.database import get_db
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.auth import FRONTEND_URL, verify_password
 from app.core.dependencies import get_current_active_user
-from app.core.auth import verify_password, FRONTEND_URL
-from app.services.auth import AuthService
-from app.core.logging import SecurityLogger, rate_limiter, get_client_ip
+from app.core.logging import SecurityLogger, get_client_ip, rate_limiter
+from app.database import get_db
 from app.schemas.auth import (
     AvailabilityCheck,
-    ResendVerification,
-    UserRegister,
-    UserLogin,
-    TokenResponse,
-    TokenRefresh,
+    EmailUpdate,
     EmailVerification,
     PasswordReset,
     PasswordResetConfirm,
-    EmailUpdate,
     PasswordUpdate,
+    ResendVerification,
+    TokenRefresh,
+    TokenResponse,
+    UserLogin,
+    UserRegister,
 )
-from app.schemas.user import UserPrivate
 from app.schemas.common import ErrorResponse
+from app.schemas.user import UserPrivate
+from app.services.auth import AuthService
+
 from ..models.user import User
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(tags=["authentication"])
+
+
+def _verification_success_html(frontend_url: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>E-Mail bestätigt</title>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
+        .success {{ color: green; }}
+        .container {{ max-width: 500px; margin: 0 auto; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="success">E-Mail erfolgreich bestätigt!</h1>
+        <p>Ihre E-Mail-Adresse wurde erfolgreich verifiziert.</p>
+        <p>Sie können sich jetzt anmelden.</p>
+        <p><a href="{frontend_url}/auth/login">Zur Anmeldung</a></p>
+    </div>
+</body>
+</html>"""
+
+
+def _verification_failure_html() -> str:
+    return """<!DOCTYPE html>
+<html>
+<head>
+    <title>Verifizierung fehlgeschlagen</title>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+        .error { color: red; }
+        .container { max-width: 500px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="error">Verifizierung fehlgeschlagen</h1>
+        <p>Der Verifizierungslink ist ungültig oder abgelaufen.</p>
+        <p>Bitte fordern Sie einen neuen Link an.</p>
+    </div>
+</body>
+</html>"""
+
+
+def _verification_error_html(detail: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Fehler</title>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
+        .error {{ color: red; }}
+        .container {{ max-width: 500px; margin: 0 auto; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="error">Fehler</h1>
+        <p>{detail}</p>
+    </div>
+</body>
+</html>"""
 
 
 @router.post(
@@ -355,28 +423,7 @@ async def verify_email_get(
                 details={"action": "email_verified"},
             )
 
-            return HTMLResponse(f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>E-Mail bestätigt</title>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
-                    .success {{ color: green; }}
-                    .container {{ max-width: 500px; margin: 0 auto; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1 class="success">✅ E-Mail erfolgreich bestätigt!</h1>
-                    <p>Ihre E-Mail-Adresse wurde erfolgreich verifiziert.</p>
-                    <p>Sie können sich jetzt anmelden.</p>
-                    <p><a href="{FRONTEND_URL}/auth/login">Zur Anmeldung</a></p>
-                </div>
-            </body>
-            </html>
-            """)
+            return HTMLResponse(_verification_success_html(FRONTEND_URL))
         else:
             SecurityLogger.log_suspicious_activity(
                 request,
@@ -387,30 +434,7 @@ async def verify_email_get(
                 },
             )
 
-            return HTMLResponse(
-                """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Verifizierung fehlgeschlagen</title>
-                <meta charset="UTF-8">
-                <style>
-                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
-                    .error { color: red; }
-                    .container { max-width: 500px; margin: 0 auto; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1 class="error">❌ Verifizierung fehlgeschlagen</h1>
-                    <p>Der Verifizierungslink ist ungültig oder abgelaufen.</p>
-                    <p>Bitte fordern Sie einen neuen Link an.</p>
-                </div>
-            </body>
-            </html>
-            """,
-                status_code=400,
-            )
+            return HTMLResponse(_verification_failure_html(), status_code=400)
     except HTTPException as e:
         SecurityLogger.log_suspicious_activity(
             request,
@@ -418,26 +442,7 @@ async def verify_email_get(
             details={"action": "email_verification_error", "error": str(e.detail)},
         )
         return HTMLResponse(
-            f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Fehler</title>
-            <meta charset="UTF-8">
-            <style>
-                body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
-                .error {{ color: red; }}
-                .container {{ max-width: 500px; margin: 0 auto; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1 class="error">❌ Fehler</h1>
-                <p>{e.detail}</p>
-            </div>
-        </body>
-        </html>
-        """,
+            _verification_error_html(str(e.detail)),
             status_code=e.status_code,
         )
 
@@ -467,28 +472,7 @@ async def verify_email(
                 details={"action": "email_verified"},
             )
 
-            return HTMLResponse(f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>E-Mail bestätigt</title>
-                <meta charset="UTF-8">
-                <style>
-                    body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
-                    .success {{ color: green; }}
-                    .container {{ max-width: 500px; margin: 0 auto; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1 class="success">✅ E-Mail erfolgreich bestätigt!</h1>
-                    <p>Ihre E-Mail-Adresse wurde erfolgreich verifiziert.</p>
-                    <p>Sie können sich jetzt anmelden.</p>
-                    <p><a href="{FRONTEND_URL}/auth/login">Zur Anmeldung</a></p>
-                </div>
-            </body>
-            </html>
-            """)
+            return HTMLResponse(_verification_success_html(FRONTEND_URL))
         else:
             SecurityLogger.log_suspicious_activity(
                 request,
@@ -499,30 +483,7 @@ async def verify_email(
                 },
             )
 
-            return HTMLResponse(
-                """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Verifizierung fehlgeschlagen</title>
-                <meta charset="UTF-8">
-                <style>
-                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
-                    .error { color: red; }
-                    .container { max-width: 500px; margin: 0 auto; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1 class="error">❌ Verifizierung fehlgeschlagen</h1>
-                    <p>Der Verifizierungslink ist ungültig oder abgelaufen.</p>
-                    <p>Bitte fordern Sie einen neuen Link an.</p>
-                </div>
-            </body>
-            </html>
-            """,
-                status_code=400,
-            )
+            return HTMLResponse(_verification_failure_html(), status_code=400)
     except HTTPException as e:
         SecurityLogger.log_suspicious_activity(
             request,
@@ -530,19 +491,7 @@ async def verify_email(
             details={"action": "email_verification_error", "error": str(e.detail)},
         )
         return HTMLResponse(
-            f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Fehler</title>
-            <meta charset="UTF-8">
-        </head>
-        <body>
-            <h1>Fehler</h1>
-            <p>{e.detail}</p>
-        </body>
-        </html>
-        """,
+            _verification_error_html(str(e.detail)),
             status_code=e.status_code,
         )
 

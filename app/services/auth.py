@@ -129,14 +129,15 @@ class AuthService:
                 detail="User not found or inactive",
             )
 
-        _ = await self.db.execute(
-            update(RefreshToken)
-            .where(RefreshToken.id == db_refresh_token.id)
-            .values(is_revoked=True)
-        )
-
         try:
             new_tokens = await self.create_tokens(user)
+
+            _ = await self.db.execute(
+                update(RefreshToken)
+                .where(RefreshToken.id == db_refresh_token.id)
+                .values(is_revoked=True)
+            )
+
             await self.db.commit()
 
             return new_tokens
@@ -178,8 +179,7 @@ class AuthService:
         )
         await self.db.commit()
 
-        count = result.rowcount
-        return count
+        return result.rowcount or 0
 
     async def cleanup_expired_tokens(self) -> int:
         result = await self.db.execute(
@@ -192,8 +192,7 @@ class AuthService:
         )
         await self.db.commit()
 
-        count = result.rowcount
-        return count
+        return result.rowcount or 0
 
     async def verify_email(self, token: str) -> bool:
         token_hash = hash_token(token)

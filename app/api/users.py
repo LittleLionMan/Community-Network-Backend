@@ -35,6 +35,7 @@ from app.schemas.user import (
 from app.services.file_service import FileUploadService
 from app.services.location_service import LocationService
 from app.services.privacy import PrivacyService
+from app.utils.db_utils import get_or_404
 
 router = APIRouter()
 
@@ -340,11 +341,9 @@ async def deactivate_user(
             status_code=400, detail="You cannot deactivate your own account"
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_or_404(
+        db, select(User).where(User.id == user_id), detail="User not found"
+    )
 
     if not user.is_active:
         raise HTTPException(status_code=400, detail="User is already deactivated")
@@ -375,11 +374,9 @@ async def activate_user(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_admin: Annotated[User, Depends(get_current_admin_user)],
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_or_404(
+        db, select(User).where(User.id == user_id), detail="User not found"
+    )
 
     if user.is_active:
         raise HTTPException(status_code=400, detail="User is already active")
@@ -416,11 +413,9 @@ async def update_admin_status(
             status_code=400, detail="You cannot modify your own admin status"
         )
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_or_404(
+        db, select(User).where(User.id == user_id), detail="User not found"
+    )
 
     old_status = user.is_admin
     user.is_admin = is_admin

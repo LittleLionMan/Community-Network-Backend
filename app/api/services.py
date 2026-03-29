@@ -31,6 +31,8 @@ from app.schemas.service import (
 )
 from app.services.file_service import FileUploadService
 from app.services.matching_service import ServiceMatchingService
+from app.utils.auth_utils import check_ownership
+from app.utils.db_utils import apply_update, get_or_404
 
 
 class UserServiceStats(BaseModel):
@@ -215,19 +217,13 @@ async def get_service_recommendations(
 )
 @read_rate_limit("service_listing")
 async def get_service(service_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    query = (
+    service = await get_or_404(
+        db,
         select(Service)
         .where(Service.id == service_id, Service.is_active)
-        .options(selectinload(Service.user))
+        .options(selectinload(Service.user)),
+        detail="Service not found",
     )
-
-    result = await db.execute(query)
-    service = result.scalar_one_or_none()
-
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
-        )
 
     return ServiceRead.model_validate(service, from_attributes=True)
 
@@ -362,27 +358,23 @@ async def update_service(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
+    service = await get_or_404(
+        db,
         select(Service)
         .options(selectinload(Service.user))
-        .where(Service.id == service_id)
+        .where(Service.id == service_id),
+        detail="Service not found",
     )
-    service = result.scalar_one_or_none()
 
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
-        )
+    check_ownership(
+        service,
+        current_user,
+        owner_field="user_id",
+        action="edit",
+        entity_name="service",
+    )
 
-    if service.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this service",
-        )
-
-    update_data: dict[str, object] = service_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(service, field, value)
+    apply_update(service, service_data)
 
     await db.commit()
     result = await db.execute(
@@ -424,23 +416,20 @@ async def update_service_with_image(
     contact_method: Annotated[str | None, Form()] = None,
     response_time_hours: Annotated[int | None, Form()] = None,
 ):
-    result = await db.execute(
+    service = await get_or_404(
+        db,
         select(Service)
         .options(selectinload(Service.user))
-        .where(Service.id == service_id, Service.is_active)
+        .where(Service.id == service_id, Service.is_active),
+        detail="Service not found",
     )
-    service = result.scalar_one_or_none()
-
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
-        )
-
-    if service.user_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this service",
-        )
+    check_ownership(
+        service,
+        current_user,
+        owner_field="user_id",
+        action="edit",
+        entity_name="service",
+    )
 
     parsed_locations = service.meeting_locations
     if meeting_locations is not None:
@@ -578,21 +567,18 @@ async def delete_service(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(Service).where(Service.id == service_id, Service.is_active)
+    service = await get_or_404(
+        db,
+        select(Service).where(Service.id == service_id, Service.is_active),
+        detail="Service not found",
     )
-    service = result.scalar_one_or_none()
-
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
-        )
-
-    if service.user_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this service",
-        )
+    check_ownership(
+        service,
+        current_user,
+        owner_field="user_id",
+        action="delete",
+        entity_name="service",
+    )
 
     service.is_active = False
     await db.commit()
@@ -616,21 +602,18 @@ async def delete_service_image(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(Service).where(Service.id == service_id, Service.is_active)
+    service = await get_or_404(
+        db,
+        select(Service).where(Service.id == service_id, Service.is_active),
+        detail="Service not found",
     )
-    service = result.scalar_one_or_none()
-
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
-        )
-
-    if service.user_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this service",
-        )
+    check_ownership(
+        service,
+        current_user,
+        owner_field="user_id",
+        action="edit",
+        entity_name="service",
+    )
 
     if not service.service_image_url:
         raise HTTPException(

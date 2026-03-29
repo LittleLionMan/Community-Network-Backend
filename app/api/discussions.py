@@ -1,34 +1,37 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
-from sqlalchemy.orm import selectinload
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+import re
 from datetime import datetime, timezone
 from typing import Annotated
-import re
 
-from app.database import get_db
-from app.models.forum import ForumThread, ForumPost, ForumCategory, ForumThreadView
-from app.models.user import User
-from app.models.achievement import UserAchievement
-from app.schemas.forum import (
-    ForumThreadCreate,
-    ForumThreadRead,
-    ForumThreadUpdate,
-    ForumPostCreate,
-    ForumPostRead,
-    ForumPostUpdate,
-)
-from app.schemas.common import ErrorResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
 from app.core.dependencies import get_current_user, get_moderation_service
 from app.core.rate_limit_decorator import (
     forum_post_rate_limit,
     forum_reply_rate_limit,
     read_rate_limit,
 )
+from app.database import get_db
+from app.models.achievement import UserAchievement
+from app.models.forum import ForumCategory, ForumPost, ForumThread, ForumThreadView
+from app.models.user import User
+from app.schemas.common import ErrorResponse
+from app.schemas.forum import (
+    ForumPostCreate,
+    ForumPostRead,
+    ForumPostUpdate,
+    ForumThreadCreate,
+    ForumThreadRead,
+    ForumThreadUpdate,
+)
 from app.services.moderation_service import ModerationService
 from app.services.notification_service import NotificationService
+from app.utils.auth_utils import check_ownership
+from app.utils.db_utils import apply_update, get_or_404
 
 router = APIRouter()
 
@@ -77,6 +80,17 @@ async def _enrich_thread_with_stats(thread, db: AsyncSession):
     }
 
 
+async def _enrich_thread(thread: ForumThread, db: AsyncSession) -> ForumThreadRead:
+    stats = await _enrich_thread_with_stats(thread, db)
+    thread_dict = ForumThreadRead.model_validate(thread).model_dump()
+    thread_dict["post_count"] = stats["post_count"]
+    thread_dict["latest_post"] = (
+        stats["latest_post"].isoformat() if stats["latest_post"] else None
+    )
+    thread_dict["latest_post_author"] = stats["latest_post_author"]
+    return ForumThreadRead.model_validate(thread_dict)
+
+
 def extract_mentions(html_content: str) -> list[int]:
     pattern = r'data-id="(\d+)"'
     matches = re.findall(pattern, html_content)
@@ -119,18 +133,7 @@ async def get_threads(
     result = await db.execute(query)
     threads = result.scalars().all()
 
-    enriched_threads: list[ForumThreadRead] = []
-    for thread in threads:
-        stats = await _enrich_thread_with_stats(thread, db)
-
-        thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-        thread_dict["post_count"] = stats["post_count"]
-        thread_dict["latest_post"] = (
-            stats["latest_post"].isoformat() if stats["latest_post"] else None
-        )
-        thread_dict["latest_post_author"] = stats["latest_post_author"]
-
-        enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
+    enriched_threads = [await _enrich_thread(thread, db) for thread in threads]
 
     return enriched_threads
 
@@ -149,15 +152,11 @@ async def get_threads_in_category(
         bool, Query(description="Show pinned threads first")
     ] = True,
 ):
-    result = await db.execute(
-        select(ForumCategory).where(ForumCategory.id == category_id)
+    await get_or_404(
+        db,
+        select(ForumCategory).where(ForumCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
 
     query = select(ForumThread).where(ForumThread.category_id == category_id)
 
@@ -176,18 +175,7 @@ async def get_threads_in_category(
     result = await db.execute(query)
     threads = result.scalars().all()
 
-    enriched_threads: list[ForumThreadRead] = []
-    for thread in threads:
-        stats = await _enrich_thread_with_stats(thread, db)
-
-        thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-        thread_dict["post_count"] = stats["post_count"]
-        thread_dict["latest_post"] = (
-            stats["latest_post"].isoformat() if stats["latest_post"] else None
-        )
-        thread_dict["latest_post_author"] = stats["latest_post_author"]
-
-        enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
+    enriched_threads = [await _enrich_thread(thread, db) for thread in threads]
 
     return enriched_threads
 
@@ -211,18 +199,7 @@ async def get_my_threads(
     result = await db.execute(query)
     threads = result.scalars().all()
 
-    enriched_threads: list[ForumThreadRead] = []
-    for thread in threads:
-        stats = await _enrich_thread_with_stats(thread, db)
-
-        thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-        thread_dict["post_count"] = stats["post_count"]
-        thread_dict["latest_post"] = (
-            stats["latest_post"].isoformat() if stats["latest_post"] else None
-        )
-        thread_dict["latest_post_author"] = stats["latest_post_author"]
-
-        enriched_threads.append(ForumThreadRead.model_validate(thread_dict))
+    enriched_threads = [await _enrich_thread(thread, db) for thread in threads]
 
     return enriched_threads
 
@@ -321,30 +298,15 @@ async def get_unread_status(
     responses={404: {"model": ErrorResponse, "description": "Thread not found"}},
 )
 async def get_thread(thread_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    query = (
+    thread = await get_or_404(
+        db,
         select(ForumThread)
         .where(ForumThread.id == thread_id)
-        .options(selectinload(ForumThread.creator), selectinload(ForumThread.category))
+        .options(selectinload(ForumThread.creator), selectinload(ForumThread.category)),
+        detail="Thread not found",
     )
 
-    result = await db.execute(query)
-    thread = result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-        )
-
-    stats = await _enrich_thread_with_stats(thread, db)
-
-    thread_dict = ForumThreadRead.model_validate(thread).model_dump()
-    thread_dict["post_count"] = stats["post_count"]
-    thread_dict["latest_post"] = (
-        stats["latest_post"].isoformat() if stats["latest_post"] else None
-    )
-    thread_dict["latest_post_author"] = stats["latest_post_author"]
-
-    return ForumThreadRead.model_validate(thread_dict)
+    return await _enrich_thread(thread, db)
 
 
 @router.post(
@@ -368,18 +330,13 @@ async def create_thread(
     moderation_service: Annotated[ModerationService, Depends(get_moderation_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
+    await get_or_404(
+        db,
         select(ForumCategory).where(
             ForumCategory.id == thread_data.category_id, ForumCategory.is_active
-        )
+        ),
+        detail="Category not found or inactive",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found or inactive",
-        )
 
     moderation_result = moderation_service.check_content(thread_data.title)
 
@@ -424,19 +381,19 @@ async def update_thread(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
-    thread = result.scalar_one_or_none()
+    thread = await get_or_404(
+        db,
+        select(ForumThread).where(ForumThread.id == thread_id),
+        detail="Thread not found",
+    )
 
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-        )
-
-    if thread.creator_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this thread",
-        )
+    check_ownership(
+        thread,
+        current_user,
+        owner_field="creator_id",
+        action="edit",
+        entity_name="thread",
+    )
 
     if not current_user.is_admin:
         if thread_data.is_pinned is not None or thread_data.is_locked is not None:
@@ -446,22 +403,15 @@ async def update_thread(
             )
 
     if thread_data.category_id and thread_data.category_id != thread.category_id:
-        result = await db.execute(
+        await get_or_404(
+            db,
             select(ForumCategory).where(
                 ForumCategory.id == thread_data.category_id, ForumCategory.is_active
-            )
+            ),
+            detail="New category not found or inactive",
         )
-        category = result.scalar_one_or_none()
 
-        if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="New category not found or inactive",
-            )
-
-    update_data: dict[str, object] = thread_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(thread, field, value)
+    apply_update(thread, thread_data)
 
     await db.commit()
     await db.refresh(thread, ["creator", "category"])
@@ -486,19 +436,18 @@ async def delete_thread(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
-    thread = result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-        )
-
-    if thread.creator_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this thread",
-        )
+    thread = await get_or_404(
+        db,
+        select(ForumThread).where(ForumThread.id == thread_id),
+        detail="Thread not found",
+    )
+    check_ownership(
+        thread,
+        current_user,
+        owner_field="creator_id",
+        action="delete",
+        entity_name="thread",
+    )
 
     _ = await db.execute(delete(ForumThread).where(ForumThread.id == thread_id))
     await db.commit()
@@ -516,13 +465,11 @@ async def get_thread_posts(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     check_achievement: Annotated[str | None, Query()] = None,
 ):
-    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
-    thread = result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-        )
+    await get_or_404(
+        db,
+        select(ForumThread).where(ForumThread.id == thread_id),
+        detail="Thread not found",
+    )
 
     all_posts_query = (
         select(ForumPost)
@@ -615,17 +562,13 @@ async def create_post(
             detail=f"Post content flagged: {', '.join(moderation_result['reasons'])}",
         )
 
-    result = await db.execute(
+    thread = await get_or_404(
+        db,
         select(ForumThread)
         .options(selectinload(ForumThread.creator))
-        .where(ForumThread.id == thread_id)
+        .where(ForumThread.id == thread_id),
+        detail="Thread not found",
     )
-    thread = result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-        )
 
     if thread.is_locked and not current_user.is_admin:
         raise HTTPException(
@@ -697,19 +640,12 @@ async def update_post(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(ForumPost).where(ForumPost.id == post_id))
-    post = result.scalar_one_or_none()
-
-    if not post:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Post not found"
-        )
-
-    if post.author_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this post",
-        )
+    post = await get_or_404(
+        db, select(ForumPost).where(ForumPost.id == post_id), detail="Post not found"
+    )
+    check_ownership(
+        post, current_user, owner_field="author_id", action="edit", entity_name="post"
+    )
 
     post.content = post_data.content
 
@@ -727,19 +663,12 @@ async def delete_post(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(ForumPost).where(ForumPost.id == post_id))
-    post = result.scalar_one_or_none()
-
-    if not post:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Post not found"
-        )
-
-    if post.author_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this post",
-        )
+    post = await get_or_404(
+        db, select(ForumPost).where(ForumPost.id == post_id), detail="Post not found"
+    )
+    check_ownership(
+        post, current_user, owner_field="author_id", action="delete", entity_name="post"
+    )
 
     _ = await db.execute(delete(ForumPost).where(ForumPost.id == post_id))
     await db.commit()
@@ -793,13 +722,11 @@ async def mark_thread_as_read(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(select(ForumThread).where(ForumThread.id == thread_id))
-    thread = result.scalar_one_or_none()
-
-    if not thread:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-        )
+    await get_or_404(
+        db,
+        select(ForumThread).where(ForumThread.id == thread_id),
+        detail="Thread not found",
+    )
     try:
         stmt = pg_insert(ForumThreadView).values(
             user_id=current_user.id, thread_id=thread_id, last_viewed_at=func.now()
@@ -807,7 +734,7 @@ async def mark_thread_as_read(
         stmt = stmt.on_conflict_do_update(
             index_elements=["user_id", "thread_id"], set_={"last_viewed_at": func.now()}
         )
-    except ():
+    except Exception:
         stmt = mysql_insert(ForumThreadView).values(
             user_id=current_user.id, thread_id=thread_id, last_viewed_at=func.now()
         )

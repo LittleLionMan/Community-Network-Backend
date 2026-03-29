@@ -37,6 +37,8 @@ from app.services.availability_service import AvailabilityService
 from app.services.civic_service import CivicService
 from app.services.event_service import EventService
 from app.services.notification_service import NotificationService
+from app.utils.auth_utils import check_ownership
+from app.utils.db_utils import apply_update, get_or_404
 
 router = APIRouter()
 
@@ -80,29 +82,14 @@ async def get_events(
         civic_service = CivicService(db)
         political_category_ids = await civic_service.get_political_category_ids()
 
-        print(f"DEBUG: political_category_ids = {political_category_ids}")
-        print(
-            f"DEBUG: political_only = {political_only}, exclude_political = {exclude_political}"
-        )
-
         if political_category_ids:
             if political_only:
                 query = query.where(Event.category_id.in_(political_category_ids))
-                print(
-                    f"DEBUG: Applying political_only filter with IDs: {political_category_ids}"
-                )
             elif exclude_political:
                 query = query.where(~Event.category_id.in_(political_category_ids))
-                print(
-                    f"DEBUG: Applying exclude_political filter with IDs: {political_category_ids}"
-                )
         else:
-            print("DEBUG: Keine politischen Kategorien gefunden!")
             if political_only:
                 query = query.where(Event.id == -1)
-                print("DEBUG: political_only aber keine IDs -> returning empty")
-            elif exclude_political:
-                pass
 
     query = query.order_by(Event.start_datetime.asc()).offset(skip).limit(limit)
 
@@ -209,23 +196,17 @@ async def get_event(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_optional_current_user),
 ):
-    query = (
+    event = await get_or_404(
+        db,
         select(Event)
         .where(Event.id == event_id, Event.is_active)
         .options(
             selectinload(Event.creator),
             selectinload(Event.category),
             selectinload(Event.participations).selectinload(EventParticipation.user),
-        )
+        ),
+        detail="Event not found",
     )
-
-    result = await db.execute(query)
-    event = result.scalar_one_or_none()
-
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-        )
 
     if not event.creator:
         raise HTTPException(
@@ -274,16 +255,11 @@ async def create_event(
         event_data.category_id = politics_category_id
 
     if event_data.category_id:
-        result = await db.execute(
-            select(EventCategory).where(EventCategory.id == event_data.category_id)
+        await get_or_404(
+            db,
+            select(EventCategory).where(EventCategory.id == event_data.category_id),
+            detail="Kategorie nicht gefunden",
         )
-        category = result.scalar_one_or_none()
-
-        if not category:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Kategorie nicht gefunden",
-            )
 
     event_dict = event_data.model_dump()
     event_dict["creator_id"] = current_user.id
@@ -364,36 +340,28 @@ async def update_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Event).where(Event.id == event_id, Event.is_active)
+    event = await get_or_404(
+        db,
+        select(Event).where(Event.id == event_id, Event.is_active),
+        detail="Event not found",
     )
-    event = result.scalar_one_or_none()
 
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-        )
-
-    if event.creator_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this event",
-        )
+    check_ownership(
+        event,
+        current_user,
+        owner_field="creator_id",
+        action="edit",
+        entity_name="event",
+    )
 
     if event_data.category_id and event_data.category_id != event.category_id:
-        result = await db.execute(
-            select(EventCategory).where(EventCategory.id == event_data.category_id)
+        await get_or_404(
+            db,
+            select(EventCategory).where(EventCategory.id == event_data.category_id),
+            detail="Event category not found",
         )
-        category = result.scalar_one_or_none()
 
-        if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Event category not found"
-            )
-
-    update_data = event_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(event, field, value)
+    apply_update(event, event_data)
 
     await db.commit()
     await db.refresh(event, ["creator", "category"])
@@ -418,27 +386,24 @@ async def delete_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
+    event = await get_or_404(
+        db,
         select(Event)
         .where(Event.id == event_id, Event.is_active)
         .options(
             selectinload(Event.creator),
             selectinload(Event.participations).selectinload(EventParticipation.user),
-        )
+        ),
+        detail="Event not found",
     )
 
-    event = result.scalar_one_or_none()
-
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-        )
-
-    if event.creator_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this event",
-        )
+    check_ownership(
+        event,
+        current_user,
+        owner_field="creator_id",
+        action="delete",
+        entity_name="event",
+    )
 
     registered_participants = [
         p for p in event.participations if p.status == ParticipationStatus.REGISTERED
@@ -475,16 +440,13 @@ async def join_event(
 ):
     event_service = EventService(db)
 
-    result = await db.execute(
+    event = await get_or_404(
+        db,
         select(Event)
         .where(Event.id == event_id, Event.is_active)
-        .options(selectinload(Event.participations))
+        .options(selectinload(Event.participations)),
+        detail="Event not found",
     )
-    event = result.scalar_one_or_none()
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-        )
 
     can_join, reason = await event_service.can_join_event(event, current_user)
     if not can_join:
@@ -606,15 +568,11 @@ async def leave_event(
     responses={404: {"model": ErrorResponse, "description": "Event not found"}},
 )
 async def get_event_participants(event_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Event).where(Event.id == event_id, Event.is_active)
+    await get_or_404(
+        db,
+        select(Event).where(Event.id == event_id, Event.is_active),
+        detail="Event not found",
     )
-    event = result.scalar_one_or_none()
-
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-        )
 
     result = await db.execute(
         select(EventParticipation)
@@ -755,11 +713,11 @@ async def mark_attendance(
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    event = await db.get(Event, event_id)
-    if not event:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-        )
+    await get_or_404(
+        db,
+        select(Event).where(Event.id == event_id),
+        detail="Event not found",
+    )
 
     await db.execute(
         update(EventParticipation)

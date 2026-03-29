@@ -1,17 +1,20 @@
-from fastapi import Depends, HTTPException, status, Cookie
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import Annotated
+
+from fastapi import Cookie, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+
 from app.database import get_db
-from .auth import verify_token
+from app.models.message import ConversationParticipant
+
 from ..models.user import User
 from ..services.event_service import EventService
 from ..services.matching_service import ServiceMatchingService
+from ..services.message_service import MessageService
 from ..services.moderation_service import ModerationService
 from ..services.voting_service import VotingService
-from ..services.message_service import MessageService
-from app.models.message import ConversationParticipant
-from typing import Annotated
+from .auth import verify_token
 
 security = HTTPBearer()
 
@@ -102,7 +105,7 @@ async def get_optional_current_user(
             return None
 
         return user
-    except ():
+    except Exception:
         return None
 
 

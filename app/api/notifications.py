@@ -1,20 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
 from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.dependencies import get_current_user
+from app.core.rate_limit_decorator import read_rate_limit
 from app.database import get_db
 from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.notification import (
+    NotificationPrivacySettings,
     NotificationRead,
-    NotificationUpdate,
     NotificationStats,
     NotificationType,
-    NotificationPrivacySettings,
+    NotificationUpdate,
 )
-from app.core.dependencies import get_current_user
-from app.core.rate_limit_decorator import read_rate_limit
+from app.utils.db_utils import get_or_404
 
 router = APIRouter()
 
@@ -146,16 +148,11 @@ async def update_notification(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(Notification).where(Notification.id == notification_id)
+    notification = await get_or_404(
+        db,
+        select(Notification).where(Notification.id == notification_id),
+        detail="Notification not found",
     )
-    notification = result.scalar_one_or_none()
-
-    if not notification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Notification not found",
-        )
 
     if notification.user_id != current_user.id:
         raise HTTPException(
@@ -211,16 +208,11 @@ async def delete_notification(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(Notification).where(Notification.id == notification_id)
+    notification = await get_or_404(
+        db,
+        select(Notification).where(Notification.id == notification_id),
+        detail="Notification not found",
     )
-    notification = result.scalar_one_or_none()
-
-    if not notification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Notification not found",
-        )
 
     if notification.user_id != current_user.id:
         raise HTTPException(

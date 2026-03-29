@@ -1,33 +1,53 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
-from sqlalchemy.orm import selectinload
-from typing import Annotated
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
-from app.database import get_db
-from app.models.poll import Poll, PollOption, Vote
-from app.models.forum import ForumThread
-from app.models.user import User
-from app.schemas.poll import (
-    PollCreate,
-    PollRead,
-    PollUpdate,
-    PollOptionRead,
-    VoteCreate,
-    VoteRead,
-)
-from app.schemas.common import ErrorResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
 from app.core.dependencies import get_current_user, get_optional_current_user
 from app.core.rate_limit_decorator import (
     poll_create_rate_limit,
     poll_vote_rate_limit,
     read_rate_limit,
 )
+from app.database import get_db
 from app.models.enums import PollType
+from app.models.forum import ForumThread
+from app.models.poll import Poll, PollOption, Vote
+from app.models.user import User
+from app.schemas.common import ErrorResponse
+from app.schemas.poll import (
+    PollCreate,
+    PollOptionRead,
+    PollRead,
+    PollUpdate,
+    VoteCreate,
+    VoteRead,
+)
 from app.services.voting_service import VotingService
+from app.utils.auth_utils import check_ownership
+from app.utils.db_utils import apply_update, get_or_404
 
 router = APIRouter()
+
+
+def _enrich_poll_options(
+    poll_options: list[PollOption],
+) -> tuple[list[PollOptionRead], int]:
+    """Count votes per option and total. Returns (options_with_counts, total_votes)."""
+    total_votes = 0
+    options_with_counts: list[PollOptionRead] = []
+    for option in poll_options:
+        vote_count = len(option.votes)
+        total_votes += vote_count
+        option_dict = PollOptionRead.model_validate(
+            option, from_attributes=True
+        ).model_dump()
+        option_dict["vote_count"] = vote_count
+        options_with_counts.append(PollOptionRead.model_validate(option_dict))
+    return options_with_counts, total_votes
 
 
 @router.get(
@@ -72,23 +92,9 @@ async def get_polls(
     poll_results: list[PollRead] = []
     for poll in polls:
         poll_dict = PollRead.model_validate(poll, from_attributes=True).model_dump()
-
-        total_votes = 0
-        options_with_counts = []
-
-        for option in poll.options:
-            vote_count = len(option.votes)
-            total_votes += vote_count
-
-            option_dict = PollOptionRead.model_validate(
-                option, from_attributes=True
-            ).model_dump()
-            option_dict["vote_count"] = vote_count
-            options_with_counts.append(PollOptionRead.model_validate(option_dict))
-
+        options_with_counts, total_votes = _enrich_poll_options(poll.options)
         poll_dict["options"] = options_with_counts
         poll_dict["total_votes"] = total_votes
-
         poll_results.append(PollRead.model_validate(poll_dict))
 
     return poll_results
@@ -119,38 +125,20 @@ async def get_poll(
         )
     )
 
-    result = await db.execute(query)
-    poll = result.scalar_one_or_none()
-
-    if not poll:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found"
-        )
+    poll = await get_or_404(db, query, detail="Poll not found")
 
     poll_dict = PollRead.model_validate(poll, from_attributes=True).model_dump()
+    options_with_counts, total_votes = _enrich_poll_options(poll.options)
+    poll_dict["options"] = options_with_counts
+    poll_dict["total_votes"] = total_votes
 
-    total_votes = 0
-    options_with_counts = []
     user_vote = None
-
-    for option in poll.options:
-        vote_count = len(option.votes)
-        total_votes += vote_count
-
-        if current_user:
+    if current_user:
+        for option in poll.options:
             for vote in option.votes:
                 if vote.user_id == current_user.id:
                     user_vote = option.id
                     break
-
-        option_dict = PollOptionRead.model_validate(
-            option, from_attributes=True
-        ).model_dump()
-        option_dict["vote_count"] = vote_count
-        options_with_counts.append(PollOptionRead.model_validate(option_dict))
-
-    poll_dict["options"] = options_with_counts
-    poll_dict["total_votes"] = total_votes
 
     if current_user and user_vote:
         poll_dict["user_vote"] = user_vote
@@ -199,15 +187,11 @@ async def create_poll(
                 detail="thread_id can only be specified for thread polls",
             )
 
-        result = await db.execute(
-            select(ForumThread).where(ForumThread.id == poll_data.thread_id)
+        thread = await get_or_404(
+            db,
+            select(ForumThread).where(ForumThread.id == poll_data.thread_id),
+            detail="Thread not found",
         )
-        thread = result.scalar_one_or_none()
-
-        if not thread:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found"
-            )
 
         if thread.is_locked and not current_user.is_admin:
             raise HTTPException(
@@ -266,23 +250,15 @@ async def create_poll(
         .options(
             selectinload(Poll.creator),
             selectinload(Poll.thread),
-            selectinload(Poll.options),
+            selectinload(Poll.options).selectinload(PollOption.votes),
         )
     )
     poll = result.scalar_one()
 
     poll_dict = PollRead.model_validate(poll, from_attributes=True).model_dump()
-    poll_dict["total_votes"] = 0
-
-    options_with_counts = []
-    for option in poll.options:
-        option_dict = PollOptionRead.model_validate(
-            option, from_attributes=True
-        ).model_dump()
-        option_dict["vote_count"] = 0
-        options_with_counts.append(PollOptionRead.model_validate(option_dict))
-
+    options_with_counts, total_votes = _enrich_poll_options(poll.options)
     poll_dict["options"] = options_with_counts
+    poll_dict["total_votes"] = total_votes
 
     return PollRead.model_validate(poll_dict)
 
@@ -306,23 +282,17 @@ async def update_poll(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
+    poll = await get_or_404(
+        db,
         select(Poll)
         .where(Poll.id == poll_id)
-        .options(selectinload(Poll.options).selectinload(PollOption.votes))
+        .options(selectinload(Poll.options).selectinload(PollOption.votes)),
+        detail="Poll not found",
     )
-    poll = result.scalar_one_or_none()
 
-    if not poll:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found"
-        )
-
-    if poll.creator_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this poll",
-        )
+    check_ownership(
+        poll, current_user, owner_field="creator_id", action="edit", entity_name="poll"
+    )
 
     has_votes = any(len(option.votes) > 0 for option in poll.options)
 
@@ -336,9 +306,7 @@ async def update_poll(
                 detail="Can only change question, end date, or status once voting has started",
             )
 
-    update_data: dict[str, object] = poll_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(poll, field, value)
+    apply_update(poll, poll_data)
 
     await db.commit()
     await db.refresh(poll, ["creator", "thread", "options"])
@@ -365,23 +333,21 @@ async def delete_poll(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
+    poll = await get_or_404(
+        db,
         select(Poll)
         .where(Poll.id == poll_id)
-        .options(selectinload(Poll.options).selectinload(PollOption.votes))
+        .options(selectinload(Poll.options).selectinload(PollOption.votes)),
+        detail="Poll not found",
     )
-    poll = result.scalar_one_or_none()
 
-    if not poll:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Poll not found"
-        )
-
-    if poll.creator_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this poll",
-        )
+    check_ownership(
+        poll,
+        current_user,
+        owner_field="creator_id",
+        action="delete",
+        entity_name="poll",
+    )
 
     await db.delete(poll)
     await db.commit()
@@ -516,23 +482,9 @@ async def get_my_polls(
     poll_results: list[PollRead] = []
     for poll in polls:
         poll_dict = PollRead.model_validate(poll, from_attributes=True).model_dump()
-
-        total_votes = 0
-        options_with_counts = []
-
-        for option in poll.options:
-            vote_count = len(option.votes)
-            total_votes += vote_count
-
-            option_dict = PollOptionRead.model_validate(
-                option, from_attributes=True
-            ).model_dump()
-            option_dict["vote_count"] = vote_count
-            options_with_counts.append(PollOptionRead.model_validate(option_dict))
-
+        options_with_counts, total_votes = _enrich_poll_options(poll.options)
         poll_dict["options"] = options_with_counts
         poll_dict["total_votes"] = total_votes
-
         poll_results.append(PollRead.model_validate(poll_dict))
 
     return poll_results

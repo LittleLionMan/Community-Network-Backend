@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
-from sqlalchemy.orm import selectinload
 from typing import Annotated
 
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.dependencies import get_current_admin_user, get_current_user
+from app.core.rate_limit_decorator import comment_rate_limit, read_rate_limit
 from app.database import get_db
 from app.models.comment import Comment
 from app.models.event import Event
@@ -11,9 +14,9 @@ from app.models.service import Service
 from app.models.user import User
 from app.schemas.comment import CommentCreate, CommentRead, CommentUpdate
 from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user
-from app.core.rate_limit_decorator import comment_rate_limit, read_rate_limit
 from app.services.moderation_service import ModerationService
+from app.utils.auth_utils import check_ownership
+from app.utils.db_utils import get_or_404
 
 router = APIRouter()
 
@@ -83,13 +86,7 @@ async def get_comment(comment_id: int, db: Annotated[AsyncSession, Depends(get_d
         )
     )
 
-    result = await db.execute(query)
-    comment = result.scalar_one_or_none()
-
-    if not comment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found"
-        )
+    comment = await get_or_404(db, query, detail="Comment not found")
 
     return CommentRead.model_validate(comment)
 
@@ -135,34 +132,27 @@ async def create_comment(
         )
 
     if comment_data.event_id:
-        result = await db.execute(
-            select(Event).where(Event.id == comment_data.event_id, Event.is_active)
+        await get_or_404(
+            db,
+            select(Event).where(Event.id == comment_data.event_id, Event.is_active),
+            detail="Event not found",
         )
-        if not result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Event not found"
-            )
 
     if comment_data.service_id:
-        result = await db.execute(
+        await get_or_404(
+            db,
             select(Service).where(
                 Service.id == comment_data.service_id, Service.is_active
-            )
+            ),
+            detail="Service not found",
         )
-        if not result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
-            )
 
     if comment_data.parent_id:
-        result = await db.execute(
-            select(Comment).where(Comment.id == comment_data.parent_id)
+        parent_comment = await get_or_404(
+            db,
+            select(Comment).where(Comment.id == comment_data.parent_id),
+            detail="Parent comment not found",
         )
-        parent_comment = result.scalar_one_or_none()
-        if not parent_comment:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Parent comment not found"
-            )
 
         if comment_data.event_id and parent_comment.event_id != comment_data.event_id:
             raise HTTPException(
@@ -223,19 +213,17 @@ async def update_comment(
             detail=f"Content flagged for moderation: {', '.join(moderation_result['reasons'])}",
         )
 
-    result = await db.execute(select(Comment).where(Comment.id == comment_id))
-    comment = result.scalar_one_or_none()
+    comment = await get_or_404(
+        db, select(Comment).where(Comment.id == comment_id), detail="Comment not found"
+    )
 
-    if not comment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found"
-        )
-
-    if comment.author_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to edit this comment",
-        )
+    check_ownership(
+        comment,
+        current_user,
+        owner_field="author_id",
+        action="edit",
+        entity_name="comment",
+    )
 
     comment.content = comment_data.content
 
@@ -311,6 +299,7 @@ async def get_my_comments(
     responses={403: {"model": ErrorResponse, "description": "Admin access required"}},
 )
 async def get_moderation_queue(
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     moderation_service = ModerationService(db)
@@ -324,7 +313,9 @@ async def get_moderation_queue(
     responses={403: {"model": ErrorResponse, "description": "Admin access required"}},
 )
 async def moderate_user_content(
-    user_id: int, db: Annotated[AsyncSession, Depends(get_db)]
+    user_id: int,
+    current_admin: Annotated[User, Depends(get_current_admin_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     moderation_service = ModerationService(db)
     analysis = await moderation_service.moderate_user_content(user_id)

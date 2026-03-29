@@ -294,7 +294,7 @@ async def admin_dashboard(
         stats["flagged_messages"] = flagged_messages.scalar() or 0
 
         active_tokens = await db.execute(
-            select(func.count(RefreshToken.id)).where(RefreshToken.is_revoked)
+            select(func.count(RefreshToken.id)).where(RefreshToken.is_revoked == False)
         )
         total_tokens = await db.execute(select(func.count(RefreshToken.id)))
 
@@ -719,7 +719,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             TelegramNotifier.notify_error(
                 error_type=type(exc).__name__,
                 error_message=str(exc)[:200],
-                user_id=int(user_id) if user_id else None,
+                user_id=int(str(user_id)) if user_id else None,
                 user_email=user_email,
                 endpoint=str(request.url.path),
                 traceback=error_traceback[:500],

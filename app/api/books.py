@@ -25,6 +25,7 @@ from app.schemas.book_offer import BookOfferCreate, BookOfferRead, BookOfferUpda
 from app.schemas.pagination import PaginatedBookOfferResponse
 from app.services.book_service import BookService
 from app.services.location_service import LocationService
+from app.utils.db_utils import get_or_404
 
 router = APIRouter()
 
@@ -146,12 +147,11 @@ async def delete_offer_comment(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    query = select(BookOffer).where(BookOffer.id == offer_id)
-    result = await db.execute(query)
-    offer = result.scalar_one_or_none()
-
-    if not offer:
-        raise HTTPException(status_code=404, detail="Angebot nicht gefunden")
+    offer = await get_or_404(
+        db,
+        select(BookOffer).where(BookOffer.id == offer_id),
+        detail="Angebot nicht gefunden",
+    )
 
     if offer.owner_id != current_user.id:
         raise HTTPException(
@@ -169,16 +169,13 @@ async def get_offer(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User | None, Depends(get_optional_current_user)],
 ):
-    query = (
+    offer = await get_or_404(
+        db,
         select(BookOffer)
         .options(selectinload(BookOffer.book), selectinload(BookOffer.owner))
-        .where(BookOffer.id == offer_id)
+        .where(BookOffer.id == offer_id),
+        detail="Angebot nicht gefunden",
     )
-    result = await db.execute(query)
-    offer = result.scalar_one_or_none()
-
-    if not offer:
-        raise HTTPException(status_code=404, detail="Angebot nicht gefunden")
 
     distance_km = None
     if current_user and current_user.location_lat and current_user.location_lon:
@@ -303,7 +300,7 @@ async def get_marketplace(
         if current_user.location_lat and current_user.location_lon:
             lat_range = max_distance_km / 111.0
             cos_lat = math.cos(math.radians(current_user.location_lat))
-            lon_range = max_distance_km / (111.0 * abs(cos_lat))
+            lon_range = max_distance_km / (111.0 * max(abs(cos_lat), 0.001))
 
             query = query.where(
                 and_(
@@ -326,6 +323,7 @@ async def get_marketplace(
     result = await db.execute(query)
     offers = result.scalars().all()
 
+    book_service = BookService(db)
     offer_reads = []
     for offer in offers:
         distance_km = None
@@ -338,10 +336,6 @@ async def get_marketplace(
                     offer.location_lon,
                 )
 
-                if max_distance_km and distance_km > max_distance_km:
-                    continue
-
-        book_service = BookService(db)
         all_comments = await book_service._get_all_user_comments(offer.book_id)
 
         offer_reads.append(

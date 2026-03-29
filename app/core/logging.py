@@ -232,7 +232,7 @@ class SecurityLogger:
                 limit_type=limit_type,
                 ip_address=get_client_ip(request),
                 user_id=user_id,
-                attempts=details.get("attempts", 0) if details else 0,
+                attempts=int(str(details.get("attempts", 0))) if details else 0,
             )
         )
 

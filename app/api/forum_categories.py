@@ -1,21 +1,23 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func, desc
 from sqlalchemy.orm import selectinload
 
+from app.core.dependencies import get_current_user
 from app.database import get_db
-from app.models.forum import ForumCategory, ForumThread, ForumPost, ForumThreadView
+from app.models.forum import ForumCategory, ForumPost, ForumThread, ForumThreadView
 from app.models.user import User
+from app.schemas.common import ErrorResponse
 from app.schemas.forum import (
     ForumCategoryCreate,
     ForumCategoryRead,
     ForumCategoryUpdate,
-    ForumThreadSummary,
     ForumPostSummary,
+    ForumThreadSummary,
 )
-from app.schemas.common import ErrorResponse
-from app.core.dependencies import get_current_user
-from typing import Annotated
+from app.utils.db_utils import apply_update, get_or_404
 
 router = APIRouter()
 
@@ -173,15 +175,11 @@ async def get_unread_counts(
 async def get_forum_category(
     category_id: int, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    result = await db.execute(
-        select(ForumCategory).where(ForumCategory.id == category_id)
+    category = await get_or_404(
+        db,
+        select(ForumCategory).where(ForumCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
 
     thread_count_result = await db.execute(
         select(func.count(ForumThread.id)).where(ForumThread.category_id == category.id)
@@ -239,15 +237,11 @@ async def update_forum_category(
     category_data: ForumCategoryUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(ForumCategory).where(ForumCategory.id == category_id)
+    category = await get_or_404(
+        db,
+        select(ForumCategory).where(ForumCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
 
     if category_data.name and category_data.name != category.name:
         result = await db.execute(
@@ -264,9 +258,7 @@ async def update_forum_category(
                 detail="Category name already exists",
             )
 
-    update_data: dict[str, object] = category_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(category, field, value)
+    apply_update(category, category_data)
 
     await db.commit()
     await db.refresh(category)
@@ -294,15 +286,11 @@ async def update_forum_category(
 async def delete_forum_category(
     category_id: int, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    result = await db.execute(
-        select(ForumCategory).where(ForumCategory.id == category_id)
+    category = await get_or_404(
+        db,
+        select(ForumCategory).where(ForumCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
 
     result = await db.execute(
         select(func.count(ForumThread.id)).where(ForumThread.category_id == category_id)

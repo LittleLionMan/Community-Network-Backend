@@ -7,15 +7,13 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 # Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+_secret_key = os.getenv("SECRET_KEY")
+if not _secret_key:
+    raise RuntimeError("SECRET_KEY environment variable must be set")
+SECRET_KEY: str = _secret_key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 30
-
-# Email settings
-BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
-FROM_EMAIL = os.getenv("FROM_EMAIL", "noreply@plaetzchen.xyz")
-FROM_NAME = os.getenv("FROM_NAME", "Plätzchen Community")
 
 # URL Configuration
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")

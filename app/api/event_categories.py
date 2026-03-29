@@ -1,17 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, func
-from typing import Annotated, cast
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from typing import Annotated, cast
 
-from app.database import get_db
-from app.models.user import User
-from app.models.event import EventCategory, Event
-from app.schemas.event import EventCategoryCreate, EventCategoryRead
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.dependencies import get_current_admin_user
-from app.schemas.common import ErrorResponse
 from app.core.logging import SecurityLogger
+from app.database import get_db
+from app.models.event import Event, EventCategory
+from app.models.user import User
+from app.schemas.common import ErrorResponse
+from app.schemas.event import EventCategoryCreate, EventCategoryRead
+from app.utils.db_utils import apply_update, get_or_404
 
 
 class EventCategoryStatsRead(BaseModel):
@@ -96,15 +98,11 @@ async def get_admin_event_categories(
 async def get_event_category(
     category_id: int, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    result = await db.execute(
-        select(EventCategory).where(EventCategory.id == category_id)
+    category = await get_or_404(
+        db,
+        select(EventCategory).where(EventCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
     return category
 
 
@@ -153,15 +151,11 @@ async def update_event_category(
     category_data: EventCategoryCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(EventCategory).where(EventCategory.id == category_id)
+    category = await get_or_404(
+        db,
+        select(EventCategory).where(EventCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
 
     if category_data.name != category.name:
         result = await db.execute(
@@ -178,9 +172,7 @@ async def update_event_category(
                 detail="Category name already exists",
             )
 
-    update_data: dict[str, object] = category_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(category, field, value)
+    apply_update(category, category_data)
 
     await db.commit()
     await db.refresh(category)
@@ -200,17 +192,11 @@ async def update_event_category(
 async def delete_event_category(
     category_id: int, db: Annotated[AsyncSession, Depends(get_db)]
 ):
-    result = await db.execute(
-        select(EventCategory).where(EventCategory.id == category_id)
+    await get_or_404(
+        db,
+        select(EventCategory).where(EventCategory.id == category_id),
+        detail="Category not found",
     )
-    category = result.scalar_one_or_none()
-
-    if not category:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Category not found"
-        )
-
-    from app.models.event import Event
 
     result = await db.execute(select(Event).where(Event.category_id == category_id))
     events_count = len(result.scalars().all())

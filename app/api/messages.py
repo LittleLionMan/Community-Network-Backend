@@ -395,7 +395,7 @@ async def websocket_conversation(
     except asyncio.CancelledError:
         await websocket_auth_manager.disconnect(websocket, "Connection cancelled")
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error in conversation {conversation_id}: {e}")
         await websocket_auth_manager.disconnect(websocket, f"Error: {str(e)}")
     finally:
         websocket_manager.disconnect(websocket)
